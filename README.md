@@ -1,3 +1,5 @@
+![](.github/logo.png)
+
 # NORU
 
 **N**NUE **O**n **RU**st — Zero-dependency NNUE training & inference library in pure Rust.
@@ -17,14 +19,6 @@ NORU is a **game-agnostic** NNUE library that provides both training and inferen
 - **Game-agnostic** — Runtime-configurable network dimensions via `NnueConfig`
 - **Incremental updates** — Efficient accumulator add/remove for search trees
 - **Quantization** — Automatic FP32 → i16 conversion for deployment
-
-### Verified Results
-
-| Game | Features | Network | Win Rate vs Heuristic |
-|------|----------|---------|----------------------|
-| Gomoku (15x15) | 530 (position-independent patterns) | 530→512→64→1 | **54%** |
-| Hex Battle (6x7) | 138 (per-class + global) | 138→256→64→1 | **53%** |
-| Connect 4 | - | - | **45%** |
 
 ## Quick Start
 
