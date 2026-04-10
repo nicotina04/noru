@@ -17,11 +17,11 @@ const EPSILON: f32 = 1e-8;
 #[derive(Clone)]
 pub struct TrainableWeights {
     pub config: NnueConfig,
-    pub ft_weight: Vec<Vec<f32>>,           // [feature_size][accumulator_size]
-    pub ft_bias: Vec<f32>,                  // [accumulator_size]
-    pub hidden_weights: Vec<Vec<Vec<f32>>>, // [num_layers][input_size][output_size]
-    pub hidden_biases: Vec<Vec<f32>>,       // [num_layers][output_size]
-    pub output_weight: Vec<f32>,            // [last_hidden_size]
+    pub ft_weight: Vec<Vec<f32>>,           // \[feature_size\]\[accumulator_size\]
+    pub ft_bias: Vec<f32>,                  // \[accumulator_size\]
+    pub hidden_weights: Vec<Vec<Vec<f32>>>, // \[num_layers\]\[input_size\]\[output_size\]
+    pub hidden_biases: Vec<Vec<f32>>,       // \[num_layers\]\[output_size\]
+    pub output_weight: Vec<f32>,            // \[last_hidden_size\]
     pub output_bias: f32,
 }
 

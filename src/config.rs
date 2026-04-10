@@ -19,7 +19,7 @@ pub struct NnueConfig {
     pub feature_size: usize,
     /// Accumulator 뉴런 수 (각 관점별)
     pub accumulator_size: usize,
-    /// Hidden 레이어 크기 배열 (예: &[64] 또는 &[256, 32, 32])
+    /// Hidden 레이어 크기 배열 (예: `&[64]` 또는 `&[256, 32, 32]`)
     pub hidden_sizes: &'static [usize],
     /// 활성화 함수 (accumulator 출력에만 적용)
     pub activation: Activation,

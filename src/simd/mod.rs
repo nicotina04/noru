@@ -13,7 +13,7 @@ mod avx2;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 
-/// Saturating i16 vector addition: acc[i] += w[i]
+/// Saturating i16 vector addition: `acc[i] += w[i]`
 #[inline]
 pub fn vec_add_i16(acc: &mut [i16], w: &[i16]) {
     #[cfg(target_arch = "x86_64")]
@@ -31,7 +31,7 @@ pub fn vec_add_i16(acc: &mut [i16], w: &[i16]) {
     scalar::vec_add_i16(acc, w);
 }
 
-/// Saturating i16 vector subtraction: acc[i] -= w[i]
+/// Saturating i16 vector subtraction: `acc[i] -= w[i]`
 #[inline]
 pub fn vec_sub_i16(acc: &mut [i16], w: &[i16]) {
     #[cfg(target_arch = "x86_64")]
@@ -49,7 +49,7 @@ pub fn vec_sub_i16(acc: &mut [i16], w: &[i16]) {
     scalar::vec_sub_i16(acc, w);
 }
 
-/// ClippedReLU: out[i] = clamp(inp[i], 0, 127)
+/// ClippedReLU: `out[i] = clamp(inp[i], 0, 127)`
 #[inline]
 pub fn vec_clipped_relu(out: &mut [i16], inp: &[i16]) {
     #[cfg(target_arch = "x86_64")]

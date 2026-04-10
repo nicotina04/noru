@@ -14,11 +14,15 @@ NORU is a **game-agnostic** NNUE library that provides both training and inferen
 
 ### Key Features
 
+- **Multi-hidden-layer** — Arbitrary depth networks (e.g. `&[256, 32, 32]`)
+- **CReLU + SCReLU** — Squared Clipped ReLU for stronger accumulator activation
+- **SIMD-accelerated inference** — AVX2 (x86_64), NEON (aarch64), with scalar fallback
 - **Training + Inference** — FP32 backpropagation with Adam optimizer, i16 quantized inference
 - **Zero dependencies** — Pure Rust, no PyTorch, no CUDA, no C bindings
 - **Game-agnostic** — Runtime-configurable network dimensions via `NnueConfig`
 - **Incremental updates** — Efficient accumulator add/remove for search trees
 - **Quantization** — Automatic FP32 → i16 conversion for deployment
+- **Binary format v2** — Versioned model serialization with auto-detection
 
 ## Quick Start
 
@@ -26,20 +30,21 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-noru = { git = "https://github.com/nicotina04/noru" }
+noru = "1.0"
 ```
 
 ### Training
 
 ```rust
-use noru::config::NnueConfig;
+use noru::config::{NnueConfig, Activation};
 use noru::trainer::{TrainableWeights, AdamState, Gradients, TrainingSample, SimpleRng};
 
 // 1. Define your network dimensions
 let config = NnueConfig {
-    feature_size: 530,       // your game's feature count
-    accumulator_size: 256,   // hidden accumulator neurons
-    hidden_size: 64,         // hidden layer neurons
+    feature_size: 530,         // your game's feature count
+    accumulator_size: 256,     // hidden accumulator neurons
+    hidden_sizes: &[64],       // hidden layer sizes (multi-layer: &[256, 32, 32])
+    activation: Activation::CReLU, // or Activation::SCReLU
 };
 
 // 2. Initialize weights
@@ -66,11 +71,14 @@ let inference_weights = weights.quantize(); // FP32 → i16
 ### Inference
 
 ```rust
-use noru::config::NnueConfig;
-use noru::network::{NnueWeights, Accumulator, forward};
+use noru::config::{NnueConfig, Activation};
+use noru::network::{NnueWeights, Accumulator, FeatureDelta, forward};
 
-// Load quantized weights
-let weights = NnueWeights::load_from_bytes(&model_bytes, config)?;
+// Load quantized weights (v2 format auto-detected)
+let weights = NnueWeights::load_from_bytes(&model_bytes, None)?;
+
+// Or with legacy format (requires config)
+let weights = NnueWeights::load_from_bytes(&model_bytes, Some(config))?;
 
 // Evaluate a position
 let mut acc = Accumulator::new(&weights.feature_bias);
@@ -78,11 +86,22 @@ acc.refresh(&weights, &stm_features, &nstm_features);
 let eval: i32 = forward(&acc, &weights);
 
 // Incremental update (for search trees)
-use noru::network::FeatureDelta;
 let mut delta_stm = FeatureDelta::new();
 delta_stm.add(new_feature);
 delta_stm.remove(old_feature);
 acc.update_incremental(&weights, &delta_stm, &delta_nstm);
+```
+
+### Save / Load Models
+
+```rust
+// Save
+let bytes = weights.save_to_bytes(); // v2 format with NORU header
+std::fs::write("model.bin", &bytes)?;
+
+// Load (auto-detects v2 header)
+let data = std::fs::read("model.bin")?;
+let weights = NnueWeights::load_from_bytes(&data, None)?;
 ```
 
 ## Architecture
@@ -92,26 +111,46 @@ Input (sparse features)
   ↓
 Feature Transform: [feature_size] → [accumulator_size] (per perspective)
   ↓
-ClippedReLU
+CReLU or SCReLU
   ↓
 Concat: [accumulator_size × 2] (STM + NSTM perspectives)
   ↓
-Hidden Layer: [accumulator_size × 2] → [hidden_size]
+Hidden Layer₁ → CReLU → Hidden Layer₂ → ... → Hidden Layerₙ → CReLU
   ↓
-ClippedReLU
-  ↓
-Output Layer: [hidden_size] → 1 (evaluation score)
+Output Layer → 1 (evaluation score)
 ```
 
 All dimensions are configured at runtime:
 
 ```rust
+// Simple (single hidden layer)
 let config = NnueConfig {
-    feature_size: 530,      // depends on your game
-    accumulator_size: 256,  // accuracy vs speed tradeoff
-    hidden_size: 64,        // accuracy vs speed tradeoff
+    feature_size: 530,
+    accumulator_size: 256,
+    hidden_sizes: &[64],
+    activation: Activation::CReLU,
+};
+
+// Stockfish-style (multi-layer + SCReLU)
+let config = NnueConfig {
+    feature_size: 768,
+    accumulator_size: 1024,
+    hidden_sizes: &[256, 32, 32],
+    activation: Activation::SCReLU,
 };
 ```
+
+## SIMD Acceleration
+
+Inference is automatically accelerated on supported platforms:
+
+| Platform | Instruction Set | Width | Auto-detected |
+|----------|----------------|-------|---------------|
+| x86_64 | AVX2 | 256-bit (16 × i16) | Runtime |
+| aarch64 | NEON | 128-bit (8 × i16) | Compile-time |
+| Other | Scalar | — | Fallback |
+
+No configuration needed — the fastest available path is selected automatically.
 
 ## API Reference
 
@@ -119,20 +158,22 @@ let config = NnueConfig {
 
 | Type | Description |
 |------|-------------|
-| `NnueConfig` | Network dimensions (feature_size, accumulator_size, hidden_size) |
+| `NnueConfig` | Network dimensions and activation type |
+| `Activation` | Activation function enum (`CReLU`, `SCReLU`) |
 
 ### `noru::network` (Inference, i16)
 
 | Type / Function | Description |
 |-----------------|-------------|
 | `NnueWeights` | Quantized i16 weights for inference |
-| `NnueWeights::load_from_bytes()` | Load weights from binary file |
+| `NnueWeights::load_from_bytes()` | Load weights from binary (v2 auto-detect) |
+| `NnueWeights::save_to_bytes()` | Save weights to v2 binary format |
 | `Accumulator` | Maintains per-perspective activation sums |
 | `Accumulator::refresh()` | Full recomputation from feature list |
 | `Accumulator::update_incremental()` | Efficient add/remove update |
 | `Accumulator::swap()` | Swap STM/NSTM perspectives |
 | `FeatureDelta` | Tracks added/removed features for incremental updates |
-| `forward()` | Full forward pass: Accumulator → Hidden → Output |
+| `forward()` | Full forward pass: Accumulator → Hidden layers → Output |
 
 ### `noru::trainer` (Training, FP32)
 
@@ -150,6 +191,16 @@ let config = NnueConfig {
 | `TrainingSample` | Training data (features + target) |
 | `SimpleRng` | Built-in xorshift64 RNG (no external dependency) |
 
+### `noru::simd`
+
+| Function | Description |
+|----------|-------------|
+| `vec_add_i16()` | Saturating i16 vector addition |
+| `vec_sub_i16()` | Saturating i16 vector subtraction |
+| `vec_clipped_relu()` | ClippedReLU activation (clamp to 0..127) |
+| `dot_i16_i32()` | i16 dot product with i32 accumulation |
+| `dot_screlu_i64()` | SCReLU squared dot product with i64 accumulation |
+
 ### `noru::quant`
 
 | Constant / Function | Description |
@@ -158,6 +209,7 @@ let config = NnueConfig {
 | `ACTIVATION_SCALE` (256) | Accumulator → Hidden scale |
 | `OUTPUT_SCALE` (16) | Final output scale |
 | `clipped_relu()` | ClippedReLU activation |
+| `screlu_f32()` | Squared ClippedReLU (f32) |
 | `saturate_i16()` | Safe i32 → i16 conversion |
 
 ## Building
@@ -169,16 +221,16 @@ cargo build --release
 # Run tests
 cargo test
 
-# Build as C-compatible shared library (for FFI / Unity / etc.)
-# Add to Cargo.toml: [lib] crate-type = ["lib", "cdylib"]
-cargo build --release
-# Output: target/release/libnoru.so (Linux) / noru.dll (Windows) / libnoru.dylib (macOS)
+# Generate documentation
+cargo doc --open
 ```
 
 ## Design Decisions
 
 - **No GPU** — Designed for real-time game AI on CPU. NNUE's strength is being fast enough for depth-4+ search on consumer hardware.
 - **No external dependencies** — Even the RNG is built-in (xorshift64). This means `cargo add noru` just works, everywhere.
+- **SCReLU on first layer only** — Following the Stockfish pattern, SCReLU is applied to the accumulator output. Subsequent hidden layers always use CReLU to avoid numerical issues in narrow layers.
+- **Output-major weight layout** — Hidden layer weights are stored transposed (output-major) for contiguous SIMD memory access in dot products.
 - **Vec\<T\> over fixed arrays** — All weights use heap-allocated vectors for runtime flexibility. Slight overhead vs compile-time arrays, but enables one binary for any game.
 - **Sparse feature input** — Features are passed as active index lists, not dense vectors. This matches NNUE's design for board games where most features are inactive.
 

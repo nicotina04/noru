@@ -57,15 +57,15 @@ impl FeatureDelta {
 /// indexed as `[output_idx * input_size + input_idx]`.
 pub struct NnueWeights {
     pub config: NnueConfig,
-    /// Feature → Accumulator weights [feature_size][accumulator_size]
+    /// Feature → Accumulator weights \[feature_size\]\[accumulator_size\]
     pub feature_weights: Vec<Vec<i16>>,
-    /// Feature → Accumulator bias [accumulator_size]
+    /// Feature → Accumulator bias \[accumulator_size\]
     pub feature_bias: Vec<i16>,
-    /// Hidden layer weights [num_layers] each flat [output_size * input_size], output-major
+    /// Hidden layer weights \[num_layers\] each flat \[output_size * input_size\], output-major
     pub hidden_weights: Vec<Vec<i16>>,
-    /// Hidden layer biases [num_layers][output_size]
+    /// Hidden layer biases \[num_layers\]\[output_size\]
     pub hidden_biases: Vec<Vec<i16>>,
-    /// Hidden → Output weights [last_hidden_size]
+    /// Hidden → Output weights \[last_hidden_size\]
     pub output_weights: Vec<i16>,
     /// Output bias
     pub output_bias: i16,

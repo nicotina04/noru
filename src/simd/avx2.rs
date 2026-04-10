@@ -45,7 +45,7 @@ pub unsafe fn vec_sub_i16(acc: &mut [i16], w: &[i16]) {
     }
 }
 
-/// ClippedReLU: out[i] = clamp(inp[i], 0, 127)
+/// ClippedReLU: `out[i] = clamp(inp[i], 0, 127)`
 #[target_feature(enable = "avx2")]
 pub unsafe fn vec_clipped_relu(out: &mut [i16], inp: &[i16]) {
     let len = inp.len();
@@ -106,7 +106,7 @@ pub unsafe fn dot_i16_i32(a: &[i16], b: &[i16]) -> i32 {
 }
 
 /// SCReLU squared dot product → i64.
-/// Computes sum(a[i]² × b[i]) with i64 accumulation.
+/// Computes `sum(a[i]² × b[i])` with i64 accumulation.
 #[target_feature(enable = "avx2")]
 pub unsafe fn dot_screlu_i64(a: &[i16], b: &[i16]) -> i64 {
     let len = a.len();
