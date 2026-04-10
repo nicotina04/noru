@@ -6,7 +6,7 @@ description = "Zero-dependency NNUE training & inference library in pure Rust"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nicotina04/noru"
 keywords = ["nnue", "neural-network", "game-ai", "chess", "machine-learning"]
-categories = ["game-engines", "science::ml"]
+categories = ["game-engines", "algorithms"]
 readme = "README.md"
 
 [dependencies]
