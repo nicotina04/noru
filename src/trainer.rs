@@ -1,8 +1,8 @@
-/// NNUE 역전파 트레이너 (범용)
+/// NNUE backpropagation trainer (game-agnostic).
 ///
-/// 학습은 FP32로 수행, 추론 시 i16으로 양자화.
-/// 모든 차원은 NnueConfig로 런타임 설정 가능.
-/// 다중 hidden 레이어 및 SCReLU 활성화 지원.
+/// Training is performed in FP32, quantized to i16 for inference.
+/// All dimensions are runtime-configurable via NnueConfig.
+/// Supports multi-hidden-layer networks and SCReLU activation.
 
 use crate::config::{Activation, NnueConfig};
 use crate::network::NnueWeights;
@@ -13,7 +13,7 @@ const BETA1: f32 = 0.9;
 const BETA2: f32 = 0.999;
 const EPSILON: f32 = 1e-8;
 
-/// 학습용 FP32 가중치
+/// FP32 trainable weights.
 #[derive(Clone)]
 pub struct TrainableWeights {
     pub config: NnueConfig,
@@ -25,7 +25,7 @@ pub struct TrainableWeights {
     pub output_bias: f32,
 }
 
-/// Adam 옵티마이저 상태
+/// Adam optimizer state.
 #[derive(Clone)]
 pub struct AdamState {
     ft_weight_m: Vec<Vec<f32>>,
@@ -80,7 +80,7 @@ impl AdamState {
     }
 }
 
-/// 그래디언트 버퍼
+/// Gradient accumulation buffer.
 pub struct Gradients {
     pub config: NnueConfig,
     pub ft_weight: Vec<Vec<f32>>,
@@ -139,29 +139,29 @@ impl Gradients {
     }
 }
 
-/// 학습 샘플
+/// Training sample.
 pub struct TrainingSample {
     pub stm_features: Vec<usize>,
     pub nstm_features: Vec<usize>,
     pub target: f32,
 }
 
-/// 순전파 중간 결과
+/// Forward pass intermediate results.
 pub struct ForwardResult {
     pub acc_stm: Vec<f32>,
     pub acc_nstm: Vec<f32>,
-    /// Accumulator concat 후 활성화 적용 결과
+    /// Post-activation result of concatenated accumulator
     pub acc_activated: Vec<f32>,
-    /// 각 hidden 레이어의 pre-activation 값
+    /// Pre-activation values for each hidden layer
     pub hidden_raws: Vec<Vec<f32>>,
-    /// 각 hidden 레이어의 post-activation 값
+    /// Post-activation values for each hidden layer
     pub hidden_activations: Vec<Vec<f32>>,
     pub output: f32,
     pub sigmoid: f32,
 }
 
 impl TrainableWeights {
-    /// Kaiming 초기화
+    /// Kaiming initialization.
     pub fn init_random(config: NnueConfig, rng: &mut SimpleRng) -> Self {
         let acc = config.accumulator_size;
         let num_layers = config.num_hidden_layers();
@@ -213,7 +213,7 @@ impl TrainableWeights {
         }
     }
 
-    /// 순전파 (학습용 FP32)
+    /// FP32 forward pass (for training).
     pub fn forward(&self, stm_features: &[usize], nstm_features: &[usize]) -> ForwardResult {
         let acc = self.config.accumulator_size;
         let num_layers = self.config.num_hidden_layers();
@@ -234,7 +234,7 @@ impl TrainableWeights {
             }
         }
 
-        // Accumulator 활성화 (CReLU 또는 SCReLU)
+        // Accumulator activation (CReLU or SCReLU)
         let mut acc_activated = vec![0.0f32; acc * 2];
         if use_screlu {
             for i in 0..acc {
@@ -252,7 +252,7 @@ impl TrainableWeights {
             }
         }
 
-        // Hidden 레이어
+        // Hidden layers
         let mut hidden_raws = Vec::with_capacity(num_layers);
         let mut hidden_activations = Vec::with_capacity(num_layers);
 
@@ -275,7 +275,7 @@ impl TrainableWeights {
                 raw[j] = sum;
             }
 
-            // Hidden 레이어는 항상 CReLU
+            // Hidden layers always use CReLU
             let mut activated = vec![0.0f32; out_size];
             for j in 0..out_size {
                 activated[j] = raw[j].max(0.0).min(CRELU_MAX);
@@ -305,13 +305,13 @@ impl TrainableWeights {
         }
     }
 
-    /// 역전파 (BCE: sigmoid - target)
+    /// Backpropagation (BCE loss: sigmoid - target).
     pub fn backward(&self, sample: &TrainingSample, fwd: &ForwardResult, grad: &mut Gradients) {
         let d_output = fwd.sigmoid - sample.target;
         self.backward_inner(d_output, sample, fwd, grad);
     }
 
-    /// 역전파 (MSE: output - target, sigmoid 없이 선형 출력)
+    /// Backpropagation (MSE loss: output - target, linear output without sigmoid).
     pub fn backward_mse(&self, sample: &TrainingSample, fwd: &ForwardResult, grad: &mut Gradients) {
         let d_output = fwd.output - sample.target;
         self.backward_inner(d_output, sample, fwd, grad);
@@ -335,24 +335,24 @@ impl TrainableWeights {
             grad.output_weight[j] += d_output * last_activated[j];
         }
 
-        // 마지막 hidden 레이어로 전파할 그래디언트
+        // Gradient to propagate to the last hidden layer
         let last_hid = self.config.last_hidden_size();
         let mut d_next = vec![0.0f32; last_hid];
         for j in 0..last_hid {
             d_next[j] = d_output * self.output_weight[j];
         }
 
-        // Hidden 레이어 역전파 (역순)
+        // Hidden layer backpropagation (reverse order)
         for k in (0..num_layers).rev() {
             let out_size = self.config.hidden_sizes[k];
 
-            // CReLU 미분 적용 (hidden 레이어는 항상 CReLU)
+            // Apply CReLU derivative (hidden layers always use CReLU)
             let mut d_pre = vec![0.0f32; out_size];
             for j in 0..out_size {
                 d_pre[j] = d_next[j] * crelu_grad_f32(fwd.hidden_raws[k][j], CRELU_MAX);
             }
 
-            // 이 레이어의 입력
+            // Input to this layer
             let input = if k == 0 {
                 &fwd.acc_activated
             } else {
@@ -360,7 +360,7 @@ impl TrainableWeights {
             };
             let in_size = input.len();
 
-            // 가중치/바이어스 그래디언트
+            // Weight/bias gradients
             for j in 0..out_size {
                 grad.hidden_biases[k][j] += d_pre[j];
             }
@@ -370,7 +370,7 @@ impl TrainableWeights {
                 }
             }
 
-            // 입력으로 그래디언트 전파
+            // Propagate gradient to input
             if k > 0 {
                 d_next = vec![0.0f32; in_size];
                 for i in 0..in_size {
@@ -381,7 +381,7 @@ impl TrainableWeights {
                     d_next[i] = sum;
                 }
             } else {
-                // k == 0: accumulator 활성화로 전파
+                // k == 0: propagate to accumulator activation
                 let mut d_acc_activated = vec![0.0f32; in_size];
                 for i in 0..in_size {
                     let mut sum = 0.0f32;
@@ -391,7 +391,7 @@ impl TrainableWeights {
                     d_acc_activated[i] = sum;
                 }
 
-                // Accumulator 활성화 미분
+                // Accumulator activation derivative
                 let mut d_acc = vec![0.0f32; acc * 2];
                 if use_screlu {
                     for i in 0..acc {
@@ -413,7 +413,7 @@ impl TrainableWeights {
                     }
                 }
 
-                // Feature 레이어 그래디언트 (sparse)
+                // Feature layer gradients (sparse)
                 for i in 0..acc {
                     grad.ft_bias[i] += d_acc[i] + d_acc[acc + i];
                 }
@@ -431,7 +431,7 @@ impl TrainableWeights {
         }
     }
 
-    /// Adam 옵티마이저
+    /// Adam optimizer step.
     pub fn adam_update(
         &mut self,
         grad: &Gradients,
@@ -545,7 +545,7 @@ impl TrainableWeights {
         }
     }
 
-    /// FP32 → i16 양자화
+    /// FP32 → i16 quantization.
     pub fn quantize(&self) -> NnueWeights {
         let acc = self.config.accumulator_size;
         let num_layers = self.config.num_hidden_layers();
@@ -563,7 +563,7 @@ impl TrainableWeights {
             weights.feature_bias[i] = (self.ft_bias[i] * scale).round() as i16;
         }
 
-        // Hidden layers (trainer is input-major [in][out], inference is output-major flat)
+        // Hidden layers (trainer is input-major, inference is output-major flat)
         for k in 0..num_layers {
             let in_size = self.config.layer_input_size(k);
             let out_size = self.config.hidden_sizes[k];
@@ -598,7 +598,7 @@ fn adam_step(param: &mut f32, grad: f32, m: &mut f32, v: &mut f32, lr: f32, bc1:
     *param -= lr * m_hat / (v_hat.sqrt() + EPSILON);
 }
 
-/// 간단한 난수 생성기 (xorshift64)
+/// Simple xorshift64 random number generator.
 pub struct SimpleRng {
     state: u64,
 }
