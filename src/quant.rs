@@ -16,6 +16,33 @@ pub fn clipped_relu(val: i16, max: i16) -> i16 {
     val.max(0).min(max)
 }
 
+/// SCReLU (f32): clamp(val, 0, max)²
+#[inline]
+pub fn screlu_f32(val: f32, max: f32) -> f32 {
+    let clamped = val.max(0.0).min(max);
+    clamped * clamped
+}
+
+/// SCReLU 미분 (f32): 2 * clamp(val, 0, max)  (활성 구간에서만)
+#[inline]
+pub fn screlu_grad_f32(val: f32, max: f32) -> f32 {
+    if val > 0.0 && val < max {
+        2.0 * val
+    } else {
+        0.0
+    }
+}
+
+/// CReLU 미분 (f32): 1 if 0 < val < max, else 0
+#[inline]
+pub fn crelu_grad_f32(val: f32, max: f32) -> f32 {
+    if val > 0.0 && val < max {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// i32 누적값을 i16으로 안전하게 변환 (saturating)
 #[inline]
 pub fn saturate_i16(val: i32) -> i16 {
