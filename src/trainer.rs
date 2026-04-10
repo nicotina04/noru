@@ -563,13 +563,13 @@ impl TrainableWeights {
             weights.feature_bias[i] = (self.ft_bias[i] * scale).round() as i16;
         }
 
-        // Hidden layers
+        // Hidden layers (trainer is input-major [in][out], inference is output-major flat)
         for k in 0..num_layers {
             let in_size = self.config.layer_input_size(k);
             let out_size = self.config.hidden_sizes[k];
-            for i in 0..in_size {
-                for j in 0..out_size {
-                    weights.hidden_weights[k][i][j] =
+            for j in 0..out_size {
+                for i in 0..in_size {
+                    weights.hidden_weights[k][j * in_size + i] =
                         (self.hidden_weights[k][i][j] * scale).round() as i16;
                 }
             }
@@ -864,7 +864,6 @@ mod tests {
 
         let has_nonzero = quantized.hidden_weights[1]
             .iter()
-            .flat_map(|r| r.iter())
             .any(|&v| v != 0);
         assert!(has_nonzero, "second hidden layer should have non-zero quantized weights");
     }
