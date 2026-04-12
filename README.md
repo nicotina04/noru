@@ -62,7 +62,9 @@ let sample = TrainingSample {
 
 let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
 let mut grad = Gradients::new(config);
-weights.backward(&sample, &fwd, &mut grad);  // BCE loss
+weights.backward_bce(&sample, &fwd, &mut grad);  // BCE loss, target in [0, 1]
+// or for raw eval regression:
+// weights.backward_raw_mse(&sample, &fwd, &mut grad);
 weights.adam_update(&grad, &mut adam, 0.001, 1.0);
 
 // 4. Quantize for deployment
@@ -167,7 +169,7 @@ No configuration needed — the fastest available path is selected automatically
 
 NORU is built as a `cdylib` in addition to `rlib`, producing `libnoru.{so,dylib}` / `noru.dll`. The `noru::ffi` module exposes a C ABI surface for embedding in game engines and other non-Rust hosts:
 
-- **Trainer**: `noru_trainer_new / free / forward / backward_mse / zero_grad / adam_step`
+- **Trainer**: `noru_trainer_new / free / forward / backward_bce / backward_raw_mse / zero_grad / adam_step`
 - **Checkpoint**: `noru_trainer_save_fp32 / load_fp32` (FP32 weight serialization)
 - **Quantize**: `noru_trainer_quantize` → `NoruWeights` for inference
 - **Inference**: `noru_weights_load / save / free`, `noru_accumulator_new / refresh / update / swap / forward`

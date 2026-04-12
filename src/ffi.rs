@@ -247,11 +247,14 @@ pub unsafe extern "C" fn noru_trainer_forward(
     })
 }
 
-/// Run an MSE backward pass against `target` using the last forward result,
-/// accumulating gradients into the internal gradient buffer. Call
-/// [`noru_trainer_zero_grad`] before starting a new mini-batch.
+/// Backward pass with binary cross-entropy loss on `sigmoid(output)`.
+///
+/// Use this when the target is in the `[0, 1]` range (e.g. win probability
+/// or a normalized evaluation). Gradient is `sigmoid(output) - target`.
+/// Gradients accumulate into the internal buffer — call
+/// [`noru_trainer_zero_grad`] between mini-batches.
 #[no_mangle]
-pub unsafe extern "C" fn noru_trainer_backward_mse(
+pub unsafe extern "C" fn noru_trainer_backward_bce(
     handle: *mut NoruTrainer,
     target: f32,
 ) -> i32 {
@@ -265,7 +268,7 @@ pub unsafe extern "C" fn noru_trainer_backward_mse(
         let sample = match trainer.last_sample.as_mut() {
             Some(s) => s,
             None => {
-                set_last_error("backward_mse called before forward");
+                set_last_error("backward_bce called before forward");
                 return NORU_ERR_STATE;
             }
         };
@@ -273,11 +276,49 @@ pub unsafe extern "C" fn noru_trainer_backward_mse(
         let fwd = match trainer.last_fwd.as_ref() {
             Some(f) => f,
             None => {
-                set_last_error("backward_mse called without forward result");
+                set_last_error("backward_bce called without forward result");
                 return NORU_ERR_STATE;
             }
         };
-        trainer.weights.backward_mse(sample, fwd, &mut trainer.grad);
+        trainer.weights.backward_bce(sample, fwd, &mut trainer.grad);
+        NORU_OK
+    })
+}
+
+/// Backward pass with raw MSE: `(output - target)^2` against the raw
+/// pre-sigmoid output.
+///
+/// Use this when the target is an unbounded real-valued eval
+/// (e.g. centipawn score). **The target is not in `[0, 1]`.** For
+/// probability-like targets use [`noru_trainer_backward_bce`] instead.
+#[no_mangle]
+pub unsafe extern "C" fn noru_trainer_backward_raw_mse(
+    handle: *mut NoruTrainer,
+    target: f32,
+) -> i32 {
+    guard(|| {
+        clear_last_error();
+        if handle.is_null() {
+            set_last_error("handle is null");
+            return NORU_ERR_NULL_PTR;
+        }
+        let trainer = &mut *handle;
+        let sample = match trainer.last_sample.as_mut() {
+            Some(s) => s,
+            None => {
+                set_last_error("backward_raw_mse called before forward");
+                return NORU_ERR_STATE;
+            }
+        };
+        sample.target = target;
+        let fwd = match trainer.last_fwd.as_ref() {
+            Some(f) => f,
+            None => {
+                set_last_error("backward_raw_mse called without forward result");
+                return NORU_ERR_STATE;
+            }
+        };
+        trainer.weights.backward_raw_mse(sample, fwd, &mut trainer.grad);
         NORU_OK
     })
 }
@@ -683,7 +724,8 @@ mod tests {
             assert_eq!(rc, NORU_OK);
 
             assert_eq!(noru_trainer_zero_grad(trainer), NORU_OK);
-            assert_eq!(noru_trainer_backward_mse(trainer, 0.5), NORU_OK);
+            assert_eq!(noru_trainer_backward_bce(trainer, 0.5), NORU_OK);
+            assert_eq!(noru_trainer_backward_raw_mse(trainer, 0.5), NORU_OK);
             assert_eq!(noru_trainer_adam_step(trainer, 1e-3, 1.0), NORU_OK);
 
             let mut save_ptr: *mut u8 = ptr::null_mut();

@@ -309,14 +309,22 @@ impl TrainableWeights {
         }
     }
 
-    /// Backpropagation (BCE loss: sigmoid - target).
-    pub fn backward(&self, sample: &TrainingSample, fwd: &ForwardResult, grad: &mut Gradients) {
+    /// Backpropagation with binary cross-entropy loss on `sigmoid(output)`.
+    ///
+    /// Use this when your target is in the `[0, 1]` range (e.g. win
+    /// probability, normalized eval). The gradient is `sigmoid - target`.
+    pub fn backward_bce(&self, sample: &TrainingSample, fwd: &ForwardResult, grad: &mut Gradients) {
         let d_output = fwd.sigmoid - sample.target;
         self.backward_inner(d_output, sample, fwd, grad);
     }
 
-    /// Backpropagation (MSE loss: output - target, linear output without sigmoid).
-    pub fn backward_mse(&self, sample: &TrainingSample, fwd: &ForwardResult, grad: &mut Gradients) {
+    /// Backpropagation with MSE loss on the raw pre-sigmoid output.
+    ///
+    /// Use this when you are regressing an unbounded real-valued target
+    /// (e.g. centipawn eval) and want `(output - target)^2`. The target is
+    /// **not** in `[0, 1]`; it is in the same unbounded space as the
+    /// network's raw linear output.
+    pub fn backward_raw_mse(&self, sample: &TrainingSample, fwd: &ForwardResult, grad: &mut Gradients) {
         let d_output = fwd.output - sample.target;
         self.backward_inner(d_output, sample, fwd, grad);
     }
@@ -862,7 +870,7 @@ mod tests {
         assert!(fwd.sigmoid > 0.0 && fwd.sigmoid < 1.0);
 
         let mut grad = Gradients::new(config);
-        weights.backward(&sample, &fwd, &mut grad);
+        weights.backward_bce(&sample, &fwd, &mut grad);
 
         let has_nonzero = grad.output_weight.iter().any(|&g| g != 0.0);
         assert!(has_nonzero, "gradients should be non-zero");
@@ -888,7 +896,7 @@ mod tests {
         for _ in 0..100 {
             let mut grad = Gradients::new(config);
             let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
-            weights.backward(&sample, &fwd, &mut grad);
+            weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
         }
 
@@ -937,7 +945,7 @@ mod tests {
         assert_eq!(fwd.hidden_raws[1].len(), 8);
 
         let mut grad = Gradients::new(config);
-        weights.backward(&sample, &fwd, &mut grad);
+        weights.backward_bce(&sample, &fwd, &mut grad);
 
         let has_nonzero = grad.output_weight.iter().any(|&g| g != 0.0);
         assert!(has_nonzero, "multi-layer gradients should be non-zero");
@@ -963,7 +971,7 @@ mod tests {
         for _ in 0..200 {
             let mut grad = Gradients::new(config);
             let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
-            weights.backward(&sample, &fwd, &mut grad);
+            weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
         }
 
@@ -993,7 +1001,7 @@ mod tests {
         assert!(fwd.sigmoid > 0.0 && fwd.sigmoid < 1.0);
 
         let mut grad = Gradients::new(config);
-        weights.backward(&sample, &fwd, &mut grad);
+        weights.backward_bce(&sample, &fwd, &mut grad);
 
         let has_nonzero = grad.output_weight.iter().any(|&g| g != 0.0);
         assert!(has_nonzero, "SCReLU gradients should be non-zero");
@@ -1019,7 +1027,7 @@ mod tests {
         for _ in 0..200 {
             let mut grad = Gradients::new(config);
             let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
-            weights.backward(&sample, &fwd, &mut grad);
+            weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
         }
 
