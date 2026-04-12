@@ -13,6 +13,10 @@ const BETA1: f32 = 0.9;
 const BETA2: f32 = 0.999;
 const EPSILON: f32 = 1e-8;
 
+/// FP32 checkpoint magic ("NRUF" in little-endian bytes).
+const FP32_MAGIC: u32 = 0x4655524E;
+const FP32_VERSION: u32 = 1;
+
 /// FP32 trainable weights.
 #[derive(Clone)]
 pub struct TrainableWeights {
@@ -545,6 +549,183 @@ impl TrainableWeights {
         }
     }
 
+    /// Serialize FP32 weights to a self-describing binary blob.
+    ///
+    /// Use [`TrainableWeights::load_from_bytes`] to restore. Format is
+    /// independent from the quantized inference format produced by
+    /// [`TrainableWeights::quantize`] + [`NnueWeights::save_to_bytes`].
+    pub fn save_to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&FP32_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&FP32_VERSION.to_le_bytes());
+        buf.extend_from_slice(&(self.config.feature_size as u32).to_le_bytes());
+        buf.extend_from_slice(&(self.config.accumulator_size as u32).to_le_bytes());
+        buf.extend_from_slice(&(self.config.num_hidden_layers() as u32).to_le_bytes());
+        for &hs in self.config.hidden_sizes {
+            buf.extend_from_slice(&(hs as u32).to_le_bytes());
+        }
+        let act_byte: u8 = match self.config.activation {
+            Activation::CReLU => 0,
+            Activation::SCReLU => 1,
+        };
+        buf.push(act_byte);
+
+        let write_f32 = |buf: &mut Vec<u8>, v: f32| buf.extend_from_slice(&v.to_le_bytes());
+
+        for row in &self.ft_weight {
+            for &v in row {
+                write_f32(&mut buf, v);
+            }
+        }
+        for &v in &self.ft_bias {
+            write_f32(&mut buf, v);
+        }
+
+        for k in 0..self.config.num_hidden_layers() {
+            let in_size = self.config.layer_input_size(k);
+            let out_size = self.config.hidden_sizes[k];
+            for i in 0..in_size {
+                for j in 0..out_size {
+                    write_f32(&mut buf, self.hidden_weights[k][i][j]);
+                }
+            }
+            for &v in &self.hidden_biases[k] {
+                write_f32(&mut buf, v);
+            }
+        }
+
+        for &v in &self.output_weight {
+            write_f32(&mut buf, v);
+        }
+        write_f32(&mut buf, self.output_bias);
+
+        buf
+    }
+
+    /// Deserialize FP32 weights produced by [`TrainableWeights::save_to_bytes`].
+    ///
+    /// The resulting config leaks `hidden_sizes` into a `&'static [usize]`.
+    /// Callers that need to reclaim this memory can do so via
+    /// [`crate::config::reclaim_leaked_hidden_sizes`].
+    pub fn load_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+        let mut cursor = 0usize;
+
+        let read_u32 = |cursor: &mut usize| -> Result<u32, &'static str> {
+            if *cursor + 4 > data.len() {
+                return Err("unexpected EOF reading header");
+            }
+            let val = u32::from_le_bytes([
+                data[*cursor],
+                data[*cursor + 1],
+                data[*cursor + 2],
+                data[*cursor + 3],
+            ]);
+            *cursor += 4;
+            Ok(val)
+        };
+
+        let read_f32 = |cursor: &mut usize| -> Result<f32, &'static str> {
+            if *cursor + 4 > data.len() {
+                return Err("unexpected EOF in fp32 payload");
+            }
+            let val = f32::from_le_bytes([
+                data[*cursor],
+                data[*cursor + 1],
+                data[*cursor + 2],
+                data[*cursor + 3],
+            ]);
+            *cursor += 4;
+            Ok(val)
+        };
+
+        let magic = read_u32(&mut cursor)?;
+        if magic != FP32_MAGIC {
+            return Err("invalid fp32 magic");
+        }
+        let version = read_u32(&mut cursor)?;
+        if version != FP32_VERSION {
+            return Err("unsupported fp32 version");
+        }
+
+        let feature_size = read_u32(&mut cursor)? as usize;
+        let accumulator_size = read_u32(&mut cursor)? as usize;
+        let num_layers = read_u32(&mut cursor)? as usize;
+        if num_layers == 0 || num_layers > 16 {
+            return Err("invalid number of hidden layers");
+        }
+
+        let mut hidden_sizes_owned = Vec::with_capacity(num_layers);
+        for _ in 0..num_layers {
+            hidden_sizes_owned.push(read_u32(&mut cursor)? as usize);
+        }
+
+        if cursor >= data.len() {
+            return Err("unexpected EOF reading activation");
+        }
+        let activation = match data[cursor] {
+            0 => Activation::CReLU,
+            1 => Activation::SCReLU,
+            _ => return Err("unknown activation type"),
+        };
+        cursor += 1;
+
+        let hidden_sizes: &'static [usize] = hidden_sizes_owned.leak();
+        let config = NnueConfig {
+            feature_size,
+            accumulator_size,
+            hidden_sizes,
+            activation,
+        };
+
+        let mut ft_weight = vec![vec![0.0f32; accumulator_size]; feature_size];
+        for row in ft_weight.iter_mut() {
+            for v in row.iter_mut() {
+                *v = read_f32(&mut cursor)?;
+            }
+        }
+        let mut ft_bias = vec![0.0f32; accumulator_size];
+        for v in ft_bias.iter_mut() {
+            *v = read_f32(&mut cursor)?;
+        }
+
+        let mut hidden_weights = Vec::with_capacity(num_layers);
+        let mut hidden_biases = Vec::with_capacity(num_layers);
+        for k in 0..num_layers {
+            let in_size = config.layer_input_size(k);
+            let out_size = config.hidden_sizes[k];
+            let mut layer_w = vec![vec![0.0f32; out_size]; in_size];
+            for row in layer_w.iter_mut() {
+                for v in row.iter_mut() {
+                    *v = read_f32(&mut cursor)?;
+                }
+            }
+            hidden_weights.push(layer_w);
+
+            let mut bias = vec![0.0f32; out_size];
+            for v in bias.iter_mut() {
+                *v = read_f32(&mut cursor)?;
+            }
+            hidden_biases.push(bias);
+        }
+
+        let last_hid = config.last_hidden_size();
+        let mut output_weight = vec![0.0f32; last_hid];
+        for v in output_weight.iter_mut() {
+            *v = read_f32(&mut cursor)?;
+        }
+        let output_bias = read_f32(&mut cursor)?;
+
+        Ok(Self {
+            config,
+            ft_weight,
+            ft_bias,
+            hidden_weights,
+            hidden_biases,
+            output_weight,
+            output_bias,
+        })
+    }
+
     /// FP32 → i16 quantization.
     pub fn quantize(&self) -> NnueWeights {
         let acc = self.config.accumulator_size;
@@ -866,5 +1047,42 @@ mod tests {
             .iter()
             .any(|&v| v != 0);
         assert!(has_nonzero, "second hidden layer should have non-zero quantized weights");
+    }
+
+    #[test]
+    fn test_fp32_save_load_roundtrip() {
+        let config = multi_layer_config();
+        let mut rng = SimpleRng::new(4242);
+        let original = TrainableWeights::init_random(config, &mut rng);
+
+        let bytes = original.save_to_bytes();
+        let restored = TrainableWeights::load_from_bytes(&bytes).expect("load ok");
+
+        assert_eq!(restored.config.feature_size, config.feature_size);
+        assert_eq!(restored.config.accumulator_size, config.accumulator_size);
+        assert_eq!(restored.config.hidden_sizes, config.hidden_sizes);
+        assert_eq!(restored.config.activation, config.activation);
+
+        assert_eq!(restored.ft_weight, original.ft_weight);
+        assert_eq!(restored.ft_bias, original.ft_bias);
+        assert_eq!(restored.hidden_weights, original.hidden_weights);
+        assert_eq!(restored.hidden_biases, original.hidden_biases);
+        assert_eq!(restored.output_weight, original.output_weight);
+        assert_eq!(restored.output_bias, original.output_bias);
+
+        let sample = TrainingSample {
+            stm_features: vec![1, 5, 10],
+            nstm_features: vec![2, 7, 15],
+            target: 0.5,
+        };
+        let f1 = original.forward(&sample.stm_features, &sample.nstm_features);
+        let f2 = restored.forward(&sample.stm_features, &sample.nstm_features);
+        assert_eq!(f1.output, f2.output);
+    }
+
+    #[test]
+    fn test_fp32_load_rejects_bad_magic() {
+        let bogus = vec![0u8; 64];
+        assert!(TrainableWeights::load_from_bytes(&bogus).is_err());
     }
 }

@@ -23,6 +23,7 @@ NORU is a **game-agnostic** NNUE library that provides both training and inferen
 - **Incremental updates** — Efficient accumulator add/remove for search trees
 - **Quantization** — Automatic FP32 → i16 conversion for deployment
 - **Binary format v2** — Versioned model serialization with auto-detection
+- **C ABI / FFI layer** — `cdylib` build + `noru::ffi` for embedding in Unity, Godot, C#, C++
 
 ## Quick Start
 
@@ -161,6 +162,18 @@ No configuration needed — the fastest available path is selected automatically
 | `NnueConfig` | Network dimensions and activation type (static `hidden_sizes`) |
 | `OwnedNnueConfig` | Runtime-constructible variant with `Vec<usize>` hidden sizes; convert via `.leak()` |
 | `Activation` | Activation function enum (`CReLU`, `SCReLU`) |
+
+### `noru::ffi` (C ABI, optional)
+
+NORU is built as a `cdylib` in addition to `rlib`, producing `libnoru.{so,dylib}` / `noru.dll`. The `noru::ffi` module exposes a C ABI surface for embedding in game engines and other non-Rust hosts:
+
+- **Trainer**: `noru_trainer_new / free / forward / backward_mse / zero_grad / adam_step`
+- **Checkpoint**: `noru_trainer_save_fp32 / load_fp32` (FP32 weight serialization)
+- **Quantize**: `noru_trainer_quantize` → `NoruWeights` for inference
+- **Inference**: `noru_weights_load / save / free`, `noru_accumulator_new / refresh / update / swap / forward`
+- **Errors**: `noru_last_error()` returns a thread-local C string for the most recent failure.
+
+All FFI functions return an `i32` status code (`NORU_OK = 0`, negative values for errors) and catch panics at the boundary. See `src/ffi.rs` for the full surface.
 
 ### `noru::network` (Inference, i16)
 

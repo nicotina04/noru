@@ -1,6 +1,6 @@
 [package]
 name = "noru"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 description = "Zero-dependency NNUE training & inference library in pure Rust"
 license = "MIT OR Apache-2.0"
@@ -8,5 +8,9 @@ repository = "https://github.com/nicotina04/noru"
 keywords = ["nnue", "neural-network", "game-ai", "chess", "machine-learning"]
 categories = ["game-engines", "algorithms"]
 readme = "README.md"
+
+[lib]
+name = "noru"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
