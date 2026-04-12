@@ -649,6 +649,110 @@ pub unsafe extern "C" fn noru_accumulator_update(
     })
 }
 
+/// Undo an incremental update previously applied to the accumulator.
+///
+/// Pass the exact same `added` / `removed` lists that were given to the
+/// matching [`noru_accumulator_update`] call. This is the fastest way to
+/// pop a branch in a tree search when you do not want to maintain a
+/// cloned snapshot of the accumulator.
+#[no_mangle]
+pub unsafe extern "C" fn noru_accumulator_update_undo(
+    acc: *mut NoruAccumulator,
+    weights: *mut NoruWeights,
+    stm_added_ptr: *const u32,
+    stm_added_len: usize,
+    stm_removed_ptr: *const u32,
+    stm_removed_len: usize,
+    nstm_added_ptr: *const u32,
+    nstm_added_len: usize,
+    nstm_removed_ptr: *const u32,
+    nstm_removed_len: usize,
+) -> i32 {
+    guard(|| {
+        clear_last_error();
+        if acc.is_null() || weights.is_null() {
+            set_last_error("null pointer argument");
+            return NORU_ERR_NULL_PTR;
+        }
+        let acc_ref = &mut *acc;
+        let w = &*weights;
+        let stm_added = slice_from_raw_usize(stm_added_ptr, stm_added_len);
+        let stm_removed = slice_from_raw_usize(stm_removed_ptr, stm_removed_len);
+        let nstm_added = slice_from_raw_usize(nstm_added_ptr, nstm_added_len);
+        let nstm_removed = slice_from_raw_usize(nstm_removed_ptr, nstm_removed_len);
+        let stm_delta = match build_feature_delta(&stm_added, &stm_removed) {
+            Ok(d) => d,
+            Err(e) => {
+                set_last_error(e);
+                return NORU_ERR_INVALID_ARG;
+            }
+        };
+        let nstm_delta = match build_feature_delta(&nstm_added, &nstm_removed) {
+            Ok(d) => d,
+            Err(e) => {
+                set_last_error(e);
+                return NORU_ERR_INVALID_ARG;
+            }
+        };
+        acc_ref
+            .acc
+            .update_incremental_undo(&w.weights, &stm_delta, &nstm_delta);
+        NORU_OK
+    })
+}
+
+/// Deep-clone an accumulator into a new independently-owned handle.
+///
+/// The returned handle is not bound to any weights; it carries only the
+/// raw state. Pair it with the same weights pointer you used for the
+/// source accumulator when calling forward.
+#[no_mangle]
+pub unsafe extern "C" fn noru_accumulator_clone(
+    acc: *mut NoruAccumulator,
+    out_clone: *mut *mut NoruAccumulator,
+) -> i32 {
+    guard(|| {
+        clear_last_error();
+        if acc.is_null() || out_clone.is_null() {
+            set_last_error("null pointer argument");
+            return NORU_ERR_NULL_PTR;
+        }
+        let src = &*acc;
+        let cloned = Box::new(NoruAccumulator {
+            acc: src.acc.clone(),
+        });
+        *out_clone = Box::into_raw(cloned);
+        NORU_OK
+    })
+}
+
+/// Overwrite the state of `dst` with the state of `src`. Both handles must
+/// have been created from accumulators of matching topology (same
+/// accumulator size). Useful for reusing a single scratch accumulator
+/// inside a search loop instead of allocating fresh clones per node.
+#[no_mangle]
+pub unsafe extern "C" fn noru_accumulator_copy_from(
+    dst: *mut NoruAccumulator,
+    src: *mut NoruAccumulator,
+) -> i32 {
+    guard(|| {
+        clear_last_error();
+        if dst.is_null() || src.is_null() {
+            set_last_error("null pointer argument");
+            return NORU_ERR_NULL_PTR;
+        }
+        let d = &mut *dst;
+        let s = &*src;
+        if d.acc.stm.len() != s.acc.stm.len() || d.acc.nstm.len() != s.acc.nstm.len() {
+            set_last_error("accumulator size mismatch");
+            return NORU_ERR_INVALID_ARG;
+        }
+        d.acc.stm.copy_from_slice(&s.acc.stm);
+        d.acc.nstm.copy_from_slice(&s.acc.nstm);
+        NORU_OK
+    })
+}
+
 /// Swap the STM and NSTM perspectives of the accumulator.
 #[no_mangle]
 pub unsafe extern "C" fn noru_accumulator_swap(acc: *mut NoruAccumulator) -> i32 {
@@ -773,6 +877,39 @@ mod tests {
                 NORU_OK
             );
 
+            // Clone + copy_from + update_undo smoke test.
+            let mut cloned_acc: *mut NoruAccumulator = ptr::null_mut();
+            assert_eq!(
+                noru_accumulator_clone(acc_handle, &mut cloned_acc),
+                NORU_OK
+            );
+            assert!(!cloned_acc.is_null());
+
+            let added: [u32; 1] = [3];
+            assert_eq!(
+                noru_accumulator_update(
+                    acc_handle, weights_handle,
+                    added.as_ptr(), added.len(),
+                    ptr::null(), 0,
+                    ptr::null(), 0,
+                    ptr::null(), 0),
+                NORU_OK
+            );
+            assert_eq!(
+                noru_accumulator_update_undo(
+                    acc_handle, weights_handle,
+                    added.as_ptr(), added.len(),
+                    ptr::null(), 0,
+                    ptr::null(), 0,
+                    ptr::null(), 0),
+                NORU_OK
+            );
+            assert_eq!(
+                noru_accumulator_copy_from(acc_handle, cloned_acc),
+                NORU_OK
+            );
+
+            noru_accumulator_free(cloned_acc);
             noru_accumulator_free(acc_handle);
             noru_weights_free(weights_handle);
             noru_trainer_free(trainer2);
