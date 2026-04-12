@@ -158,7 +158,8 @@ No configuration needed — the fastest available path is selected automatically
 
 | Type | Description |
 |------|-------------|
-| `NnueConfig` | Network dimensions and activation type |
+| `NnueConfig` | Network dimensions and activation type (static `hidden_sizes`) |
+| `OwnedNnueConfig` | Runtime-constructible variant with `Vec<usize>` hidden sizes; convert via `.leak()` |
 | `Activation` | Activation function enum (`CReLU`, `SCReLU`) |
 
 ### `noru::network` (Inference, i16)
