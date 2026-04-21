@@ -1,0 +1,14 @@
+# Normalize all text files to LF in the repo; Windows users still see CRLF on
+# checkout if their core.autocrlf is set to "true".
+* text=auto eol=lf
+
+# Explicit overrides for clarity.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.lock  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+*.bin   binary
+*.png   binary
