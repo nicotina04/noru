@@ -12,6 +12,19 @@
 
 NORU is a **game-agnostic** NNUE library that provides both training and inference in a single, dependency-free Rust crate. Configure your network dimensions at runtime via `NnueConfig` — no recompilation needed.
 
+### Why this library?
+
+Most NNUE code in the wild lives inside a specific chess engine (Stockfish, Rapfi, …) and is hard-wired to that engine's feature layout in C++. Applying NNUE to a different game — Gomoku, Connect 4, a tactical hex-grid battler — traditionally means either forking one of those engines and rewriting its feature encoder, or re-implementing training from scratch in Python with PyTorch and then writing a separate C++ inference path for deployment.
+
+NORU collapses that pipeline into one pure-Rust crate:
+
+- **One crate for training and inference.** FP32 backprop with Adam for training, i16 quantized forward pass with SIMD acceleration for deployment. You don't leave the Rust toolchain.
+- **No learned assumptions about chess.** `NnueConfig` decouples `feature_size`, `accumulator_size`, `hidden_sizes`, and the activation function from the binary layout, so the same crate serves a 4096-feature Gomoku encoder and a 138-feature hex-grid encoder without code changes.
+- **No dependencies.** Including the RNG (xorshift64). `cargo add noru` just works on any platform Rust supports, including WebAssembly and ARM embedded targets.
+- **Deployment-ready.** A `cdylib` build + the `noru::ffi` layer exposes the inference API to Unity, Godot, C#, and C++ so the same trained weights can ship into a game engine without a Python runtime.
+
+The design target is game AI developers who want Stockfish-class evaluation quality for non-chess domains without paying the integration cost of the chess-engine ecosystem.
+
 ### Key Features
 
 - **Multi-hidden-layer** — Arbitrary depth networks (e.g. `&[256, 32, 32]`)
@@ -106,6 +119,34 @@ std::fs::write("model.bin", &bytes)?;
 let data = std::fs::read("model.bin")?;
 let weights = NnueWeights::load_from_bytes(&data, None)?;
 ```
+
+## Examples
+
+Runnable examples live in [`examples/`](examples/). Each is a self-contained
+binary you can clone and run without a separate game engine:
+
+```sh
+# Minimal training → quantization → inference round trip (4-feature toy problem)
+cargo run --release --example xor
+
+# Multi-hidden-layer network with SCReLU activation
+cargo run --release --example multi_layer
+
+# FP32 → i16 → save → load → inference, reports quantization sign agreement
+cargo run --release --example quantize_roundtrip
+```
+
+## Applications
+
+NORU has been validated across three games of different branching factors and
+feature encodings, which is the primary evidence that the runtime-configurable
+design generalizes beyond chess:
+
+- **Gomoku (15×15 Five-in-a-Row).** `figrid-board` v0.4.x ships a pbrain/Piskvork-compatible Gomocup engine (`pbrain-figrid-noru`) built on NORU. Feature set: 4096 (PS + LP-Rich + Compound threats + Density). Configuration: accumulator 512 → hidden 64 → output. Gomocup 2026 submission target. Repo: <https://github.com/nicotina04/figrid-board>.
+- **Hex-grid tactical battler.** An auto-extraction RPG combat engine uses NORU for unit-placement evaluation. Feature set: 138 (position-independent, per-class + global). Configuration: accumulator 256 → hidden 64 → output. Demonstrates that non-board-game domains fit the same API.
+- **Connect 4.** A minimal second game used as an ablation target to confirm generality; reaches ~45% win rate against a depth-matched heuristic after a few hours of training.
+
+These three share the identical `noru` crate — only `NnueConfig` and the feature extractor differ per domain.
 
 ## Architecture
 
