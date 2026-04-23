@@ -7,12 +7,12 @@ tags:
   - SIMD
   - quantization
 authors:
-  - name: "TODO: add author name"
+  - name: "Hogyung Choi"
     corresponding: true
     affiliation: "1"
 affiliations:
   - index: 1
-    name: "TODO: add affiliation before submission"
+    name: "Independent Researcher"
 date: 23 April 2026
 bibliography: paper.bib
 ---
