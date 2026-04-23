@@ -96,6 +96,8 @@ pub struct Gradients {
 
 impl Gradients {
     pub fn new(config: NnueConfig) -> Self {
+        let feature_size = config.feature_size;
+        let last_hidden_size = config.last_hidden_size();
         let acc = config.accumulator_size;
         let num_layers = config.num_hidden_layers();
 
@@ -111,11 +113,11 @@ impl Gradients {
 
         Self {
             config,
-            ft_weight: vec![vec![0.0; acc]; config.feature_size],
+            ft_weight: vec![vec![0.0; acc]; feature_size],
             ft_bias: vec![0.0; acc],
             hidden_weights: hw,
             hidden_biases: hb,
-            output_weight: vec![0.0; config.last_hidden_size()],
+            output_weight: vec![0.0; last_hidden_size],
             output_bias: 0.0,
         }
     }
@@ -571,7 +573,7 @@ impl TrainableWeights {
         buf.extend_from_slice(&(self.config.feature_size as u32).to_le_bytes());
         buf.extend_from_slice(&(self.config.accumulator_size as u32).to_le_bytes());
         buf.extend_from_slice(&(self.config.num_hidden_layers() as u32).to_le_bytes());
-        for &hs in self.config.hidden_sizes {
+        for &hs in self.config.hidden_sizes.iter() {
             buf.extend_from_slice(&(hs as u32).to_le_bytes());
         }
         let act_byte: u8 = match self.config.activation {
@@ -614,9 +616,7 @@ impl TrainableWeights {
 
     /// Deserialize FP32 weights produced by [`TrainableWeights::save_to_bytes`].
     ///
-    /// The resulting config leaks `hidden_sizes` into a `&'static [usize]`.
-    /// Callers that need to reclaim this memory can do so via
-    /// [`crate::config::reclaim_leaked_hidden_sizes`].
+    /// The resulting config owns runtime `hidden_sizes` without leaking.
     pub fn load_from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         let mut cursor = 0usize;
 
@@ -679,13 +679,12 @@ impl TrainableWeights {
         };
         cursor += 1;
 
-        let hidden_sizes: &'static [usize] = hidden_sizes_owned.leak();
-        let config = NnueConfig {
+        let config = NnueConfig::new_owned(
             feature_size,
             accumulator_size,
-            hidden_sizes,
+            hidden_sizes_owned,
             activation,
-        };
+        );
 
         let mut ft_weight = vec![vec![0.0f32; accumulator_size]; feature_size];
         for row in ft_weight.iter_mut() {
@@ -742,7 +741,7 @@ impl TrainableWeights {
         let num_layers = self.config.num_hidden_layers();
         let scale = WEIGHT_SCALE as f32;
 
-        let mut weights = NnueWeights::zeros(self.config);
+        let mut weights = NnueWeights::zeros(self.config.clone());
 
         // Feature weights
         for (feat, row) in self.ft_weight.iter().enumerate() {
@@ -830,37 +829,22 @@ mod tests {
     use super::*;
 
     fn test_config() -> NnueConfig {
-        NnueConfig {
-            feature_size: 530,
-            accumulator_size: 512,
-            hidden_sizes: &[64],
-            activation: Activation::CReLU,
-        }
+        NnueConfig::new_static(530, 512, &[64], Activation::CReLU)
     }
 
     fn multi_layer_config() -> NnueConfig {
-        NnueConfig {
-            feature_size: 64,
-            accumulator_size: 32,
-            hidden_sizes: &[16, 8],
-            activation: Activation::CReLU,
-        }
+        NnueConfig::new_static(64, 32, &[16, 8], Activation::CReLU)
     }
 
     fn screlu_config() -> NnueConfig {
-        NnueConfig {
-            feature_size: 64,
-            accumulator_size: 32,
-            hidden_sizes: &[16],
-            activation: Activation::SCReLU,
-        }
+        NnueConfig::new_static(64, 32, &[16], Activation::SCReLU)
     }
 
     #[test]
     fn test_forward_backward_no_panic() {
         let config = test_config();
         let mut rng = SimpleRng::new(42);
-        let weights = TrainableWeights::init_random(config, &mut rng);
+        let weights = TrainableWeights::init_random(config.clone(), &mut rng);
 
         let sample = TrainingSample {
             stm_features: vec![0, 100, 300],
@@ -871,7 +855,7 @@ mod tests {
         let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
         assert!(fwd.sigmoid > 0.0 && fwd.sigmoid < 1.0);
 
-        let mut grad = Gradients::new(config);
+        let mut grad = Gradients::new(config.clone());
         weights.backward_bce(&sample, &fwd, &mut grad);
 
         let has_nonzero = grad.output_weight.iter().any(|&g| g != 0.0);
@@ -882,8 +866,8 @@ mod tests {
     fn test_training_reduces_loss() {
         let config = test_config();
         let mut rng = SimpleRng::new(123);
-        let mut weights = TrainableWeights::init_random(config, &mut rng);
-        let mut state = AdamState::new(config);
+        let mut weights = TrainableWeights::init_random(config.clone(), &mut rng);
+        let mut state = AdamState::new(config.clone());
 
         let sample = TrainingSample {
             stm_features: vec![10, 20, 30],
@@ -896,7 +880,7 @@ mod tests {
             - (1.0 - sample.target) * (1.0 - fwd_before.sigmoid).ln();
 
         for _ in 0..100 {
-            let mut grad = Gradients::new(config);
+            let mut grad = Gradients::new(config.clone());
             let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
             weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
@@ -931,7 +915,7 @@ mod tests {
     fn test_multi_layer_forward_backward() {
         let config = multi_layer_config();
         let mut rng = SimpleRng::new(42);
-        let weights = TrainableWeights::init_random(config, &mut rng);
+        let weights = TrainableWeights::init_random(config.clone(), &mut rng);
 
         let sample = TrainingSample {
             stm_features: vec![0, 10, 20],
@@ -946,7 +930,7 @@ mod tests {
         assert_eq!(fwd.hidden_raws[0].len(), 16);
         assert_eq!(fwd.hidden_raws[1].len(), 8);
 
-        let mut grad = Gradients::new(config);
+        let mut grad = Gradients::new(config.clone());
         weights.backward_bce(&sample, &fwd, &mut grad);
 
         let has_nonzero = grad.output_weight.iter().any(|&g| g != 0.0);
@@ -957,8 +941,8 @@ mod tests {
     fn test_multi_layer_training_reduces_loss() {
         let config = multi_layer_config();
         let mut rng = SimpleRng::new(99);
-        let mut weights = TrainableWeights::init_random(config, &mut rng);
-        let mut state = AdamState::new(config);
+        let mut weights = TrainableWeights::init_random(config.clone(), &mut rng);
+        let mut state = AdamState::new(config.clone());
 
         let sample = TrainingSample {
             stm_features: vec![1, 5, 10],
@@ -971,7 +955,7 @@ mod tests {
             - (1.0 - sample.target) * (1.0 - fwd_before.sigmoid).ln();
 
         for _ in 0..200 {
-            let mut grad = Gradients::new(config);
+            let mut grad = Gradients::new(config.clone());
             let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
             weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
@@ -991,7 +975,7 @@ mod tests {
     fn test_screlu_forward_backward() {
         let config = screlu_config();
         let mut rng = SimpleRng::new(42);
-        let weights = TrainableWeights::init_random(config, &mut rng);
+        let weights = TrainableWeights::init_random(config.clone(), &mut rng);
 
         let sample = TrainingSample {
             stm_features: vec![0, 10, 20],
@@ -1002,7 +986,7 @@ mod tests {
         let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
         assert!(fwd.sigmoid > 0.0 && fwd.sigmoid < 1.0);
 
-        let mut grad = Gradients::new(config);
+        let mut grad = Gradients::new(config.clone());
         weights.backward_bce(&sample, &fwd, &mut grad);
 
         let has_nonzero = grad.output_weight.iter().any(|&g| g != 0.0);
@@ -1013,8 +997,8 @@ mod tests {
     fn test_screlu_training_reduces_loss() {
         let config = screlu_config();
         let mut rng = SimpleRng::new(55);
-        let mut weights = TrainableWeights::init_random(config, &mut rng);
-        let mut state = AdamState::new(config);
+        let mut weights = TrainableWeights::init_random(config.clone(), &mut rng);
+        let mut state = AdamState::new(config.clone());
 
         let sample = TrainingSample {
             stm_features: vec![1, 5, 10],
@@ -1027,7 +1011,7 @@ mod tests {
             - (1.0 - sample.target) * (1.0 - fwd_before.sigmoid).ln();
 
         for _ in 0..200 {
-            let mut grad = Gradients::new(config);
+            let mut grad = Gradients::new(config.clone());
             let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
             weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
@@ -1064,7 +1048,7 @@ mod tests {
     fn test_fp32_save_load_roundtrip() {
         let config = multi_layer_config();
         let mut rng = SimpleRng::new(4242);
-        let original = TrainableWeights::init_random(config, &mut rng);
+        let original = TrainableWeights::init_random(config.clone(), &mut rng);
 
         let bytes = original.save_to_bytes();
         let restored = TrainableWeights::load_from_bytes(&bytes).expect("load ok");

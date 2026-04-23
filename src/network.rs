@@ -147,6 +147,9 @@ pub struct NnueWeights {
 impl NnueWeights {
     /// Create zero-initialized weights.
     pub fn zeros(config: NnueConfig) -> Self {
+        let feature_size = config.feature_size;
+        let accumulator_size = config.accumulator_size;
+        let last_hidden_size = config.last_hidden_size();
         let num_layers = config.num_hidden_layers();
 
         let mut hidden_weights = Vec::with_capacity(num_layers);
@@ -161,11 +164,11 @@ impl NnueWeights {
 
         Self {
             config,
-            feature_weights: vec![vec![0i16; config.accumulator_size]; config.feature_size],
-            feature_bias: vec![0i16; config.accumulator_size],
+            feature_weights: vec![vec![0i16; accumulator_size]; feature_size],
+            feature_bias: vec![0i16; accumulator_size],
             hidden_weights,
             hidden_biases,
-            output_weights: vec![0i16; config.last_hidden_size()],
+            output_weights: vec![0i16; last_hidden_size],
             output_bias: 0,
         }
     }
@@ -188,7 +191,7 @@ impl NnueWeights {
         buf.extend_from_slice(&(self.config.feature_size as u32).to_le_bytes());
         buf.extend_from_slice(&(self.config.accumulator_size as u32).to_le_bytes());
         buf.extend_from_slice(&(self.config.num_hidden_layers() as u32).to_le_bytes());
-        for &hs in self.config.hidden_sizes {
+        for &hs in self.config.hidden_sizes.iter() {
             buf.extend_from_slice(&(hs as u32).to_le_bytes());
         }
         let act_byte: u8 = match self.config.activation {
@@ -294,14 +297,12 @@ impl NnueWeights {
         };
         cursor += 1;
 
-        let hidden_sizes: &'static [usize] = hidden_sizes_owned.leak();
-
-        let config = NnueConfig {
+        let config = NnueConfig::new_owned(
             feature_size,
             accumulator_size,
-            hidden_sizes,
+            hidden_sizes_owned,
             activation,
-        };
+        );
 
         let mut weights = Self::zeros(config);
         Self::read_weights_from(data, &mut cursor, &mut weights)?;
@@ -320,7 +321,7 @@ impl NnueWeights {
         cursor: &mut usize,
         weights: &mut Self,
     ) -> Result<(), &'static str> {
-        let config = weights.config;
+        let config = &weights.config;
         let acc = config.accumulator_size;
 
         let read_i16 = |cursor: &mut usize, count: usize| -> Result<Vec<i16>, &'static str> {
@@ -454,7 +455,7 @@ fn apply_delta_reversed(acc: &mut [i16], weights: &NnueWeights, delta: &FeatureD
 
 /// NNUE forward pass: Accumulator → Hidden₁ → ... → Hiddenₙ → Output
 pub fn forward(acc: &Accumulator, weights: &NnueWeights) -> i32 {
-    let config = weights.config;
+    let config = &weights.config;
     let acc_size = config.accumulator_size;
     let use_screlu = config.activation == Activation::SCReLU;
 
@@ -504,21 +505,11 @@ mod tests {
     use super::*;
 
     fn test_config() -> NnueConfig {
-        NnueConfig {
-            feature_size: 530,
-            accumulator_size: 512,
-            hidden_sizes: &[64],
-            activation: Activation::CReLU,
-        }
+        NnueConfig::new_static(530, 512, &[64], Activation::CReLU)
     }
 
     fn multi_layer_config() -> NnueConfig {
-        NnueConfig {
-            feature_size: 64,
-            accumulator_size: 32,
-            hidden_sizes: &[16, 8],
-            activation: Activation::CReLU,
-        }
+        NnueConfig::new_static(64, 32, &[16, 8], Activation::CReLU)
     }
 
     #[test]
@@ -533,7 +524,7 @@ mod tests {
     #[test]
     fn test_accumulator_incremental_matches_refresh() {
         let config = test_config();
-        let mut weights = NnueWeights::zeros(config);
+        let mut weights = NnueWeights::zeros(config.clone());
         let acc_size = config.accumulator_size;
 
         for j in 0..acc_size {
@@ -568,7 +559,7 @@ mod tests {
     #[test]
     fn test_save_load_roundtrip() {
         let config = multi_layer_config();
-        let mut weights = NnueWeights::zeros(config);
+        let mut weights = NnueWeights::zeros(config.clone());
         // Set some weights via the flat layout
         weights.feature_weights[0][0] = 42;
         weights.hidden_weights[0][0] = 7; // output 0, input 0
@@ -589,18 +580,8 @@ mod tests {
 
     #[test]
     fn test_screlu_forward_differs_from_crelu() {
-        let crelu_config = NnueConfig {
-            feature_size: 16,
-            accumulator_size: 8,
-            hidden_sizes: &[4],
-            activation: Activation::CReLU,
-        };
-        let screlu_config = NnueConfig {
-            feature_size: 16,
-            accumulator_size: 8,
-            hidden_sizes: &[4],
-            activation: Activation::SCReLU,
-        };
+        let crelu_config = NnueConfig::new_static(16, 8, &[4], Activation::CReLU);
+        let screlu_config = NnueConfig::new_static(16, 8, &[4], Activation::SCReLU);
 
         let mut w_crelu = NnueWeights::zeros(crelu_config);
         let mut w_screlu = NnueWeights::zeros(screlu_config);
