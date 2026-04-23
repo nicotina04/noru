@@ -44,7 +44,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-noru = "1.0"
+noru = "1.2"
 ```
 
 ### Training
@@ -102,9 +102,8 @@ acc.refresh(&weights, &stm_features, &nstm_features);
 let eval: i32 = forward(&acc, &weights);
 
 // Incremental update (for search trees)
-let mut delta_stm = FeatureDelta::new();
-delta_stm.add(new_feature);
-delta_stm.remove(old_feature);
+let delta_stm = FeatureDelta::from_slices(&[new_feature], &[old_feature])?;
+let delta_nstm = FeatureDelta::new();
 acc.update_incremental(&weights, &delta_stm, &delta_nstm);
 ```
 
@@ -231,6 +230,7 @@ All FFI functions return an `i32` status code (`NORU_OK = 0`, negative values fo
 | `Accumulator::update_incremental()` | Efficient add/remove update |
 | `Accumulator::swap()` | Swap STM/NSTM perspectives |
 | `FeatureDelta` | Tracks added/removed features for incremental updates |
+| `FeatureDelta::from_slices()` | Checked constructor that rejects overflow instead of truncating |
 | `forward()` | Full forward pass: Accumulator → Hidden layers → Output |
 
 ### `noru::trainer` (Training, FP32)
@@ -240,14 +240,28 @@ All FFI functions return an `i32` status code (`NORU_OK = 0`, negative values fo
 | `TrainableWeights` | FP32 weights with training methods |
 | `TrainableWeights::init_random()` | Kaiming initialization |
 | `TrainableWeights::forward()` | FP32 forward pass with intermediate results |
-| `TrainableWeights::backward()` | Backpropagation (BCE loss) |
-| `TrainableWeights::backward_mse()` | Backpropagation (MSE loss) |
+| `TrainableWeights::backward_bce()` | Backpropagation (BCE loss) |
+| `TrainableWeights::backward_raw_mse()` | Backpropagation (raw-output MSE loss) |
 | `TrainableWeights::adam_update()` | Adam optimizer step |
 | `TrainableWeights::quantize()` | FP32 → i16 for deployment |
 | `AdamState` | Adam optimizer momentum/velocity state |
 | `Gradients` | Gradient accumulation buffer |
 | `TrainingSample` | Training data (features + target) |
 | `SimpleRng` | Built-in xorshift64 RNG (no external dependency) |
+
+## Development
+
+Local checks:
+
+```bash
+cargo fmt --check
+cargo test
+cargo doc --no-deps
+cargo package --allow-dirty --list
+```
+
+For contribution and support pathways, see [CONTRIBUTING.md](CONTRIBUTING.md),
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [CITATION.cff](CITATION.cff).
 
 ### `noru::simd`
 

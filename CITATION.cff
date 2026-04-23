@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+title: NORU
+message: "If you use NORU in research software or publications, please cite the software record for this repository."
+type: software
+authors:
+  - alias: nicotina04
+    email: devherdson@gmail.com
+repository-code: "https://github.com/nicotina04/noru"
+license: "MIT OR Apache-2.0"
+version: 1.2.1
+date-released: 2026-04-21
+abstract: >-
+  NORU is a zero-dependency, game-agnostic NNUE training and inference
+  library in pure Rust with quantized CPU inference, FP32 training, SIMD
+  acceleration, and a C ABI for engine embedding.
+keywords:
+  - nnue
+  - rust
+  - game-ai
+  - neural-network
+  - inference

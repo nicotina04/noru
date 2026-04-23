@@ -5,12 +5,14 @@
 ///
 /// All dimensions are runtime-configurable via NnueConfig.
 /// Hidden layer weights use output-major flat layout for SIMD-friendly access.
-
 use crate::config::{Activation, NnueConfig};
 use crate::quant::{clipped_relu, saturate_i16, ACTIVATION_SCALE, OUTPUT_SCALE};
 use crate::simd;
+use std::error::Error;
+use std::fmt;
 
 pub const CLIPPED_RELU_MAX: i16 = 127;
+pub const MAX_FEATURE_DELTA: usize = 32;
 
 // Binary format v2 magic number: "NORU" in little-endian
 const MAGIC: u32 = 0x4E4F5255;
@@ -19,34 +21,105 @@ const FORMAT_VERSION: u32 = 2;
 /// Feature delta for incremental accumulator update.
 #[derive(Debug, Clone, Copy)]
 pub struct FeatureDelta {
-    pub added: [usize; 32],
+    pub added: [usize; MAX_FEATURE_DELTA],
     pub num_added: usize,
-    pub removed: [usize; 32],
+    pub removed: [usize; MAX_FEATURE_DELTA],
     pub num_removed: usize,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureDeltaSide {
+    Added,
+    Removed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureDeltaCapacityError {
+    pub side: FeatureDeltaSide,
+    pub capacity: usize,
+}
+
+impl fmt::Display for FeatureDeltaCapacityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let side = match self.side {
+            FeatureDeltaSide::Added => "added",
+            FeatureDeltaSide::Removed => "removed",
+        };
+        write!(
+            f,
+            "feature delta {} list exceeds capacity {}",
+            side, self.capacity
+        )
+    }
+}
+
+impl Error for FeatureDeltaCapacityError {}
 
 impl FeatureDelta {
     pub fn new() -> Self {
         Self {
-            added: [0; 32],
+            added: [0; MAX_FEATURE_DELTA],
             num_added: 0,
-            removed: [0; 32],
+            removed: [0; MAX_FEATURE_DELTA],
             num_removed: 0,
         }
     }
 
-    pub fn add(&mut self, index: usize) {
-        if self.num_added < 32 {
-            self.added[self.num_added] = index;
-            self.num_added += 1;
+    /// Append one feature to the `added` list.
+    ///
+    /// Returns an error when the fixed-capacity delta is full. Prefer this
+    /// checked API in library and FFI callers that build deltas from dynamic
+    /// feature lists.
+    pub fn try_add(&mut self, index: usize) -> Result<(), FeatureDeltaCapacityError> {
+        if self.num_added >= MAX_FEATURE_DELTA {
+            return Err(FeatureDeltaCapacityError {
+                side: FeatureDeltaSide::Added,
+                capacity: MAX_FEATURE_DELTA,
+            });
         }
+        self.added[self.num_added] = index;
+        self.num_added += 1;
+        Ok(())
+    }
+
+    /// Append one feature to the `removed` list.
+    ///
+    /// Returns an error when the fixed-capacity delta is full. Prefer this
+    /// checked API in library and FFI callers that build deltas from dynamic
+    /// feature lists.
+    pub fn try_remove(&mut self, index: usize) -> Result<(), FeatureDeltaCapacityError> {
+        if self.num_removed >= MAX_FEATURE_DELTA {
+            return Err(FeatureDeltaCapacityError {
+                side: FeatureDeltaSide::Removed,
+                capacity: MAX_FEATURE_DELTA,
+            });
+        }
+        self.removed[self.num_removed] = index;
+        self.num_removed += 1;
+        Ok(())
+    }
+
+    /// Build a delta from slices without silently truncating entries.
+    pub fn from_slices(
+        added: &[usize],
+        removed: &[usize],
+    ) -> Result<Self, FeatureDeltaCapacityError> {
+        let mut delta = Self::new();
+        for &index in added {
+            delta.try_add(index)?;
+        }
+        for &index in removed {
+            delta.try_remove(index)?;
+        }
+        Ok(delta)
+    }
+
+    pub fn add(&mut self, index: usize) {
+        let _ = self.try_add(index);
     }
 
     pub fn remove(&mut self, index: usize) {
-        if self.num_removed < 32 {
-            self.removed[self.num_removed] = index;
-            self.num_removed += 1;
-        }
+        let _ = self.try_remove(index);
     }
 }
 
@@ -158,7 +231,10 @@ impl NnueWeights {
     }
 
     /// Load from binary (auto-detects v2 header, falls back to legacy).
-    pub fn load_from_bytes(data: &[u8], legacy_config: Option<NnueConfig>) -> Result<Self, &'static str> {
+    pub fn load_from_bytes(
+        data: &[u8],
+        legacy_config: Option<NnueConfig>,
+    ) -> Result<Self, &'static str> {
         if data.len() >= 4 {
             let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
             if magic == MAGIC {
@@ -247,21 +323,20 @@ impl NnueWeights {
         let config = weights.config;
         let acc = config.accumulator_size;
 
-        let read_i16 =
-            |cursor: &mut usize, count: usize| -> Result<Vec<i16>, &'static str> {
-                let byte_count = count * 2;
-                if *cursor + byte_count > data.len() {
-                    return Err("unexpected EOF in weight file");
-                }
-                let mut result = Vec::with_capacity(count);
-                for i in 0..count {
-                    let lo = data[*cursor + i * 2] as i16;
-                    let hi = data[*cursor + i * 2 + 1] as i16;
-                    result.push(lo | (hi << 8));
-                }
-                *cursor += byte_count;
-                Ok(result)
-            };
+        let read_i16 = |cursor: &mut usize, count: usize| -> Result<Vec<i16>, &'static str> {
+            let byte_count = count * 2;
+            if *cursor + byte_count > data.len() {
+                return Err("unexpected EOF in weight file");
+            }
+            let mut result = Vec::with_capacity(count);
+            for i in 0..count {
+                let lo = data[*cursor + i * 2] as i16;
+                let hi = data[*cursor + i * 2 + 1] as i16;
+                result.push(lo | (hi << 8));
+            }
+            *cursor += byte_count;
+            Ok(result)
+        };
 
         // Feature weights
         for i in 0..config.feature_size {
@@ -397,8 +472,7 @@ pub fn forward(acc: &Accumulator, weights: &NnueWeights) -> i32 {
             // SCReLU: clamped² × weight, i64 accumulation
             for j in 0..out_size {
                 let w_row = weights.hidden_row(k, j);
-                let mut sum: i64 =
-                    weights.hidden_biases[k][j] as i64 * ACTIVATION_SCALE as i64;
+                let mut sum: i64 = weights.hidden_biases[k][j] as i64 * ACTIVATION_SCALE as i64;
                 sum += simd::dot_screlu_i64(&prev, w_row);
                 let scaled = (sum / CLIPPED_RELU_MAX as i64 / ACTIVATION_SCALE as i64) as i32;
                 next[j] = clipped_relu(saturate_i16(scaled), CLIPPED_RELU_MAX);
@@ -407,8 +481,7 @@ pub fn forward(acc: &Accumulator, weights: &NnueWeights) -> i32 {
             // CReLU: standard dot product
             for j in 0..out_size {
                 let w_row = weights.hidden_row(k, j);
-                let mut sum: i32 =
-                    weights.hidden_biases[k][j] as i32 * ACTIVATION_SCALE;
+                let mut sum: i32 = weights.hidden_biases[k][j] as i32 * ACTIVATION_SCALE;
                 sum += simd::dot_i16_i32(&prev, w_row);
                 next[j] = clipped_relu(saturate_i16(sum / ACTIVATION_SCALE), CLIPPED_RELU_MAX);
             }
@@ -557,5 +630,19 @@ mod tests {
         let eval_screlu = forward(&acc_s, &w_screlu);
 
         assert_ne!(eval_crelu, eval_screlu);
+    }
+
+    #[test]
+    fn test_feature_delta_from_slices_rejects_overflow() {
+        let added: Vec<usize> = (0..=MAX_FEATURE_DELTA).collect();
+        let err = FeatureDelta::from_slices(&added, &[])
+            .expect_err("overflowing delta should be rejected");
+        assert_eq!(
+            err,
+            FeatureDeltaCapacityError {
+                side: FeatureDeltaSide::Added,
+                capacity: MAX_FEATURE_DELTA,
+            }
+        );
     }
 }
