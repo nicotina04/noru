@@ -7,7 +7,7 @@ authors:
     email: devherdson@gmail.com
 repository-code: "https://github.com/nicotina04/noru"
 license: "MIT OR Apache-2.0"
-version: 1.2.1
+version: 2.0.0
 date-released: 2026-04-21
 abstract: >-
   NORU is a zero-dependency, game-agnostic NNUE training and inference

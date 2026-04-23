@@ -44,7 +44,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-noru = "1.2"
+noru = "2.0"
 ```
 
 ### Training
