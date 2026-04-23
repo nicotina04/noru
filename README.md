@@ -265,6 +265,12 @@ cargo package --allow-dirty --list
 For contribution and support pathways, see [CONTRIBUTING.md](CONTRIBUTING.md),
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [CITATION.cff](CITATION.cff).
 
+## Publication
+
+Draft software-paper materials live in [paper.md](paper.md),
+[paper.bib](paper.bib), and
+[documents/benchmark_inventory.md](documents/benchmark_inventory.md).
+
 ### `noru::simd`
 
 | Function | Description |
