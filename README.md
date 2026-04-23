@@ -134,6 +134,9 @@ cargo run --release --example multi_layer
 
 # FP32 → i16 → save → load → inference, reports quantization audit metrics
 cargo run --release --example quantize_roundtrip
+
+# Mini board state -> sparse feature extraction -> training/inference loop
+cargo run --release --example feature_loop
 ```
 
 ## Applications
@@ -147,6 +150,10 @@ design generalizes beyond chess:
 - **Connect 4.** A minimal second game used as an ablation target to confirm generality; reaches ~45% win rate against a depth-matched heuristic after a few hours of training.
 
 These three share the identical `noru` crate — only `NnueConfig` and the feature extractor differ per domain.
+
+Evidence notes and current public/private artifact status are tracked in
+[documents/adoption_evidence.md](documents/adoption_evidence.md) and
+[documents/benchmark_inventory.md](documents/benchmark_inventory.md).
 
 ## Architecture
 
@@ -270,6 +277,18 @@ For contribution and support pathways, see [CONTRIBUTING.md](CONTRIBUTING.md),
 Draft software-paper materials live in [paper.md](paper.md),
 [paper.bib](paper.bib), and
 [documents/benchmark_inventory.md](documents/benchmark_inventory.md).
+
+## Reproducibility
+
+For reviewer-facing usage examples beyond the toy demos:
+
+- [examples/feature_loop.rs](examples/feature_loop.rs) shows a small
+  board-style feature extractor loop on top of NORU's training and inference
+  APIs.
+- [examples/ffi_embed.c](examples/ffi_embed.c) shows how a non-Rust host can
+  call the C ABI directly.
+- [documents/adoption_evidence.md](documents/adoption_evidence.md) summarizes
+  verified public downstream evidence and clearly marks what is still local.
 
 ### `noru::simd`
 
