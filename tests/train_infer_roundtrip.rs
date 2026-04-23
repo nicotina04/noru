@@ -21,17 +21,23 @@ fn synthetic_samples(seed: u64, n: usize) -> Vec<TrainingSample> {
     (0..n)
         .map(|_| {
             let len = 2 + rng.next_usize(3);
-            let mut stm: Vec<usize> =
-                (0..len).map(|_| rng.next_usize(SMALL_CONFIG.feature_size)).collect();
+            let mut stm: Vec<usize> = (0..len)
+                .map(|_| rng.next_usize(SMALL_CONFIG.feature_size))
+                .collect();
             stm.sort_unstable();
             stm.dedup();
-            let mut nstm: Vec<usize> =
-                (0..len).map(|_| rng.next_usize(SMALL_CONFIG.feature_size)).collect();
+            let mut nstm: Vec<usize> = (0..len)
+                .map(|_| rng.next_usize(SMALL_CONFIG.feature_size))
+                .collect();
             nstm.sort_unstable();
             nstm.dedup();
-            let target = (stm.len() as f32 / (stm.len() + nstm.len()).max(1) as f32)
-                .clamp(0.0, 1.0);
-            TrainingSample { stm_features: stm, nstm_features: nstm, target }
+            let target =
+                (stm.len() as f32 / (stm.len() + nstm.len()).max(1) as f32).clamp(0.0, 1.0);
+            TrainingSample {
+                stm_features: stm,
+                nstm_features: nstm,
+                target,
+            }
         })
         .collect()
 }
@@ -57,8 +63,8 @@ fn save_load_produces_identical_inference() {
 
     let quantized = weights.quantize();
     let bytes = quantized.save_to_bytes();
-    let reloaded = NnueWeights::load_from_bytes(&bytes, None)
-        .expect("v2 header must be recognized on reload");
+    let reloaded =
+        NnueWeights::load_from_bytes(&bytes, None).expect("v2 header must be recognized on reload");
 
     // Same inputs must yield identical i16 outputs before and after serialize
     // → deserialize. This is the minimum contract of the binary format.
@@ -106,8 +112,11 @@ fn incremental_update_matches_refresh() {
     let mut stm_final = stm_initial.clone();
     stm_final.push(stm_added);
     stm_final.sort_unstable();
-    let nstm_final: Vec<usize> =
-        nstm_initial.iter().copied().filter(|&f| f != nstm_removed).collect();
+    let nstm_final: Vec<usize> = nstm_initial
+        .iter()
+        .copied()
+        .filter(|&f| f != nstm_removed)
+        .collect();
     let mut acc_refresh = Accumulator::new(&weights.feature_bias);
     acc_refresh.refresh(&weights, &stm_final, &nstm_final);
 

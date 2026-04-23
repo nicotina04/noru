@@ -25,8 +25,12 @@ const CONFIG: NnueConfig = NnueConfig {
 fn synthetic_sample(rng: &mut SimpleRng, idx: usize) -> TrainingSample {
     let stm_len = 4 + rng.next_usize(4);
     let nstm_len = 4 + rng.next_usize(4);
-    let mut stm: Vec<usize> = (0..stm_len).map(|_| rng.next_usize(CONFIG.feature_size)).collect();
-    let mut nstm: Vec<usize> = (0..nstm_len).map(|_| rng.next_usize(CONFIG.feature_size)).collect();
+    let mut stm: Vec<usize> = (0..stm_len)
+        .map(|_| rng.next_usize(CONFIG.feature_size))
+        .collect();
+    let mut nstm: Vec<usize> = (0..nstm_len)
+        .map(|_| rng.next_usize(CONFIG.feature_size))
+        .collect();
     stm.sort_unstable();
     stm.dedup();
     nstm.sort_unstable();
@@ -38,7 +42,11 @@ fn synthetic_sample(rng: &mut SimpleRng, idx: usize) -> TrainingSample {
     let target = (overlap as f32 / stm.len().max(1) as f32).clamp(0.0, 1.0);
 
     let _ = idx;
-    TrainingSample { stm_features: stm, nstm_features: nstm, target }
+    TrainingSample {
+        stm_features: stm,
+        nstm_features: nstm,
+        target,
+    }
 }
 
 fn main() {
@@ -50,10 +58,7 @@ fn main() {
 
     println!(
         "Config: feature={}, acc={}, hidden={:?}, activation={:?}",
-        CONFIG.feature_size,
-        CONFIG.accumulator_size,
-        CONFIG.hidden_sizes,
-        CONFIG.activation,
+        CONFIG.feature_size, CONFIG.accumulator_size, CONFIG.hidden_sizes, CONFIG.activation,
     );
     println!("Training {} samples for 10 epochs...", samples.len());
 
@@ -66,7 +71,10 @@ fn main() {
             weights.adam_update(&grad, &mut adam, 1e-3, 1.0);
             total += (fwd.sigmoid - sample.target).powi(2);
         }
-        println!("  epoch {epoch:>2}: mean MSE = {:.6}", total / samples.len() as f32);
+        println!(
+            "  epoch {epoch:>2}: mean MSE = {:.6}",
+            total / samples.len() as f32
+        );
     }
 
     // Inference with i16 quantized weights.
@@ -75,5 +83,8 @@ fn main() {
     let mut acc = Accumulator::new(&inference.feature_bias);
     acc.refresh(&inference, &test.stm_features, &test.nstm_features);
     let eval = forward(&acc, &inference);
-    println!("\nFirst sample i16 eval: {eval} (target was {:.3})", test.target);
+    println!(
+        "\nFirst sample i16 eval: {eval} (target was {:.3})",
+        test.target
+    );
 }

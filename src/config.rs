@@ -51,7 +51,10 @@ impl NnueConfig {
     /// Output size of the last hidden layer (= input size of the output layer)
     #[inline]
     pub fn last_hidden_size(&self) -> usize {
-        *self.hidden_sizes.last().expect("hidden_sizes must not be empty")
+        *self
+            .hidden_sizes
+            .last()
+            .expect("hidden_sizes must not be empty")
     }
 }
 
@@ -76,7 +79,12 @@ impl OwnedNnueConfig {
         hidden_sizes: Vec<usize>,
         activation: Activation,
     ) -> Self {
-        Self { feature_size, accumulator_size, hidden_sizes, activation }
+        Self {
+            feature_size,
+            accumulator_size,
+            hidden_sizes,
+            activation,
+        }
     }
 
     /// Consume `self` and produce a [`NnueConfig`] by leaking `hidden_sizes`

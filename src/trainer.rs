@@ -3,7 +3,6 @@
 /// Training is performed in FP32, quantized to i16 for inference.
 /// All dimensions are runtime-configurable via NnueConfig.
 /// Supports multi-hidden-layer networks and SCReLU activation.
-
 use crate::config::{Activation, NnueConfig};
 use crate::network::NnueWeights;
 use crate::quant::{crelu_grad_f32, screlu_f32, screlu_grad_f32, WEIGHT_SCALE};
@@ -21,11 +20,11 @@ const FP32_VERSION: u32 = 1;
 #[derive(Clone)]
 pub struct TrainableWeights {
     pub config: NnueConfig,
-    pub ft_weight: Vec<Vec<f32>>,           // \[feature_size\]\[accumulator_size\]
-    pub ft_bias: Vec<f32>,                  // \[accumulator_size\]
+    pub ft_weight: Vec<Vec<f32>>, // \[feature_size\]\[accumulator_size\]
+    pub ft_bias: Vec<f32>,        // \[accumulator_size\]
     pub hidden_weights: Vec<Vec<Vec<f32>>>, // \[num_layers\]\[input_size\]\[output_size\]
-    pub hidden_biases: Vec<Vec<f32>>,       // \[num_layers\]\[output_size\]
-    pub output_weight: Vec<f32>,            // \[last_hidden_size\]
+    pub hidden_biases: Vec<Vec<f32>>, // \[num_layers\]\[output_size\]
+    pub output_weight: Vec<f32>,  // \[last_hidden_size\]
     pub output_bias: f32,
 }
 
@@ -324,7 +323,12 @@ impl TrainableWeights {
     /// (e.g. centipawn eval) and want `(output - target)^2`. The target is
     /// **not** in `[0, 1]`; it is in the same unbounded space as the
     /// network's raw linear output.
-    pub fn backward_raw_mse(&self, sample: &TrainingSample, fwd: &ForwardResult, grad: &mut Gradients) {
+    pub fn backward_raw_mse(
+        &self,
+        sample: &TrainingSample,
+        fwd: &ForwardResult,
+        grad: &mut Gradients,
+    ) {
         let d_output = fwd.output - sample.target;
         self.backward_inner(d_output, sample, fwd, grad);
     }
@@ -407,21 +411,19 @@ impl TrainableWeights {
                 let mut d_acc = vec![0.0f32; acc * 2];
                 if use_screlu {
                     for i in 0..acc {
-                        d_acc[i] = d_acc_activated[i]
-                            * screlu_grad_f32(fwd.acc_stm[i], CRELU_MAX);
+                        d_acc[i] = d_acc_activated[i] * screlu_grad_f32(fwd.acc_stm[i], CRELU_MAX);
                     }
                     for i in 0..acc {
-                        d_acc[acc + i] = d_acc_activated[acc + i]
-                            * screlu_grad_f32(fwd.acc_nstm[i], CRELU_MAX);
+                        d_acc[acc + i] =
+                            d_acc_activated[acc + i] * screlu_grad_f32(fwd.acc_nstm[i], CRELU_MAX);
                     }
                 } else {
                     for i in 0..acc {
-                        d_acc[i] = d_acc_activated[i]
-                            * crelu_grad_f32(fwd.acc_stm[i], CRELU_MAX);
+                        d_acc[i] = d_acc_activated[i] * crelu_grad_f32(fwd.acc_stm[i], CRELU_MAX);
                     }
                     for i in 0..acc {
-                        d_acc[acc + i] = d_acc_activated[acc + i]
-                            * crelu_grad_f32(fwd.acc_nstm[i], CRELU_MAX);
+                        d_acc[acc + i] =
+                            d_acc_activated[acc + i] * crelu_grad_f32(fwd.acc_nstm[i], CRELU_MAX);
                     }
                 }
 
@@ -1051,10 +1053,11 @@ mod tests {
         assert_eq!(quantized.hidden_weights.len(), 2);
         assert_eq!(quantized.hidden_biases.len(), 2);
 
-        let has_nonzero = quantized.hidden_weights[1]
-            .iter()
-            .any(|&v| v != 0);
-        assert!(has_nonzero, "second hidden layer should have non-zero quantized weights");
+        let has_nonzero = quantized.hidden_weights[1].iter().any(|&v| v != 0);
+        assert!(
+            has_nonzero,
+            "second hidden layer should have non-zero quantized weights"
+        );
     }
 
     #[test]
