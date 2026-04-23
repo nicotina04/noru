@@ -11,7 +11,7 @@
 //! ```
 
 use noru::config::{Activation, NnueConfig};
-use noru::network::{forward, Accumulator, NnueWeights};
+use noru::network::NnueWeights;
 use noru::trainer::{AdamState, Gradients, SimpleRng, TrainableWeights, TrainingSample};
 
 const CONFIG: NnueConfig = NnueConfig {
@@ -59,47 +59,43 @@ fn main() {
         }
     }
 
-    // FP32 reference outputs (post-sigmoid, ∈ [0, 1]).
-    let fp32_probs: Vec<f32> = samples
-        .iter()
-        .map(|s| weights.forward(&s.stm_features, &s.nstm_features).sigmoid)
-        .collect();
-
-    // Quantize → save → load (v2 auto-detected).
+    // Quantize → save → load (v2 auto-detected), then audit FP32 vs i16 drift.
     let quantized = weights.quantize();
     let bytes = quantized.save_to_bytes();
     let reloaded = NnueWeights::load_from_bytes(&bytes, None).expect("v2 header should be present");
+    let report = reloaded
+        .audit_against_fp32(&weights, &samples)
+        .expect("sample set is non-empty");
 
-    // Run i16 inference on the reloaded weights. The two pipelines use
-    // different internal scales, so we report sign agreement (binary decision
-    // stability) and the raw i16 score distribution — direct prob comparison
-    // would require knowing the quantization scale.
-    let mut sign_agree = 0usize;
-    let mut i16_min = i32::MAX;
-    let mut i16_max = i32::MIN;
-    for (sample, fp32) in samples.iter().zip(&fp32_probs) {
-        let mut acc = Accumulator::new(&reloaded.feature_bias);
-        acc.refresh(&reloaded, &sample.stm_features, &sample.nstm_features);
-        let eval = forward(&acc, &reloaded);
-        i16_min = i16_min.min(eval);
-        i16_max = i16_max.max(eval);
-        // FP32 prob > 0.5 ⇔ eval > 0 on the i16 pipeline (both are monotonic
-        // in the network's raw output).
-        let fp32_positive = *fp32 > 0.5;
-        let i16_positive = eval > 0;
-        if fp32_positive == i16_positive {
-            sign_agree += 1;
-        }
-    }
-
-    println!("Serialized model size : {} bytes", bytes.len());
-    println!("Samples evaluated     : {}", samples.len());
-    println!("i16 score range       : [{}, {}]", i16_min, i16_max);
+    println!("Serialized model size : {} bytes", report.model_bytes);
+    println!("Samples evaluated     : {}", report.sample_count);
+    println!(
+        "FP32 raw range        : [{:.3}, {:.3}]",
+        report.fp32_output_min, report.fp32_output_max
+    );
+    println!(
+        "i16 score range       : [{}, {}]",
+        report.i16_output_min, report.i16_output_max
+    );
+    println!(
+        "Inferred output scale : {:.3}",
+        report.inferred_output_scale
+    );
     println!(
         "FP32↔i16 sign agreement: {}/{} ({:.1}%)",
-        sign_agree,
-        samples.len(),
-        100.0 * sign_agree as f32 / samples.len() as f32,
+        report.sign_agreement,
+        report.sample_count,
+        100.0 * report.sign_agreement_ratio,
+    );
+    println!(
+        "Raw error (MAE/RMSE/max): {:.3} / {:.3} / {:.3}",
+        report.raw_error.mean_abs, report.raw_error.rmse, report.raw_error.max_abs
+    );
+    println!(
+        "Prob error (MAE/RMSE/max): {:.4} / {:.4} / {:.4}",
+        report.probability_error.mean_abs,
+        report.probability_error.rmse,
+        report.probability_error.max_abs
     );
     println!("Round trip            : ok (v2 header auto-detected)");
 }

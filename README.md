@@ -131,7 +131,7 @@ cargo run --release --example xor
 # Multi-hidden-layer network with SCReLU activation
 cargo run --release --example multi_layer
 
-# FP32 → i16 → save → load → inference, reports quantization sign agreement
+# FP32 → i16 → save → load → inference, reports quantization audit metrics
 cargo run --release --example quantize_roundtrip
 ```
 
@@ -217,6 +217,17 @@ NORU is built as a `cdylib` in addition to `rlib`, producing `libnoru.{so,dylib}
 - **Errors**: `noru_last_error()` returns a thread-local C string for the most recent failure.
 
 All FFI functions return an `i32` status code (`NORU_OK = 0`, negative values for errors) and catch panics at the boundary. See `src/ffi.rs` for the full surface.
+
+### `noru::audit` (Quantization Drift)
+
+| Type / Function | Description |
+|-----------------|-------------|
+| `AuditSample` | Borrowed feature lists for audit-only evaluation |
+| `FeatureSet` | Trait for reusable STM/NSTM sample adapters |
+| `QuantizationReport` | Aggregate sign/range/error metrics for FP32 vs i16 |
+| `audit_quantized_model()` | Compare FP32 weights against a quantized model |
+| `TrainableWeights::audit_quantization()` | Quantize and audit in one call |
+| `NnueWeights::audit_against_fp32()` | Audit a saved/reloaded quantized model |
 
 ### `noru::network` (Inference, i16)
 
