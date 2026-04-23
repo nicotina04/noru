@@ -4,7 +4,6 @@
 /// - x86_64 with AVX2: 256-bit SIMD (16 × i16)
 /// - aarch64 with NEON: 128-bit SIMD (8 × i16)
 /// - Fallback: scalar implementation
-
 pub mod scalar;
 
 #[cfg(target_arch = "x86_64")]
@@ -135,7 +134,10 @@ mod tests {
             let mut acc_dispatch = acc_scalar.clone();
             scalar::vec_add_i16(&mut acc_scalar, &w);
             vec_add_i16(&mut acc_dispatch, &w);
-            assert_eq!(acc_scalar, acc_dispatch, "vec_add_i16 mismatch at len={len}");
+            assert_eq!(
+                acc_scalar, acc_dispatch,
+                "vec_add_i16 mismatch at len={len}"
+            );
         }
     }
 
@@ -147,7 +149,10 @@ mod tests {
             let mut acc_dispatch = acc_scalar.clone();
             scalar::vec_sub_i16(&mut acc_scalar, &w);
             vec_sub_i16(&mut acc_dispatch, &w);
-            assert_eq!(acc_scalar, acc_dispatch, "vec_sub_i16 mismatch at len={len}");
+            assert_eq!(
+                acc_scalar, acc_dispatch,
+                "vec_sub_i16 mismatch at len={len}"
+            );
         }
     }
 
@@ -159,7 +164,10 @@ mod tests {
             let mut out_dispatch = vec![0i16; len];
             scalar::vec_clipped_relu(&mut out_scalar, &inp);
             vec_clipped_relu(&mut out_dispatch, &inp);
-            assert_eq!(out_scalar, out_dispatch, "clipped_relu mismatch at len={len}");
+            assert_eq!(
+                out_scalar, out_dispatch,
+                "clipped_relu mismatch at len={len}"
+            );
         }
     }
 

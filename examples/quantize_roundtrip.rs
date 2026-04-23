@@ -30,17 +30,23 @@ fn main() {
     let samples: Vec<TrainingSample> = (0..64)
         .map(|_| {
             let len = 2 + rng.next_usize(4);
-            let mut stm: Vec<usize> =
-                (0..len).map(|_| rng.next_usize(CONFIG.feature_size)).collect();
+            let mut stm: Vec<usize> = (0..len)
+                .map(|_| rng.next_usize(CONFIG.feature_size))
+                .collect();
             stm.sort_unstable();
             stm.dedup();
-            let mut nstm: Vec<usize> =
-                (0..len).map(|_| rng.next_usize(CONFIG.feature_size)).collect();
+            let mut nstm: Vec<usize> = (0..len)
+                .map(|_| rng.next_usize(CONFIG.feature_size))
+                .collect();
             nstm.sort_unstable();
             nstm.dedup();
-            let target = (stm.len() as f32 / (stm.len() + nstm.len()).max(1) as f32)
-                .clamp(0.0, 1.0);
-            TrainingSample { stm_features: stm, nstm_features: nstm, target }
+            let target =
+                (stm.len() as f32 / (stm.len() + nstm.len()).max(1) as f32).clamp(0.0, 1.0);
+            TrainingSample {
+                stm_features: stm,
+                nstm_features: nstm,
+                target,
+            }
         })
         .collect();
 
@@ -62,8 +68,7 @@ fn main() {
     // Quantize → save → load (v2 auto-detected).
     let quantized = weights.quantize();
     let bytes = quantized.save_to_bytes();
-    let reloaded =
-        NnueWeights::load_from_bytes(&bytes, None).expect("v2 header should be present");
+    let reloaded = NnueWeights::load_from_bytes(&bytes, None).expect("v2 header should be present");
 
     // Run i16 inference on the reloaded weights. The two pipelines use
     // different internal scales, so we report sign agreement (binary decision

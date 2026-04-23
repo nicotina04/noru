@@ -27,7 +27,9 @@ use std::slice;
 
 use crate::config::{reclaim_leaked_hidden_sizes, Activation, OwnedNnueConfig};
 use crate::network::{forward as nnue_forward, Accumulator, FeatureDelta, NnueWeights};
-use crate::trainer::{AdamState, ForwardResult, Gradients, SimpleRng, TrainableWeights, TrainingSample};
+use crate::trainer::{
+    AdamState, ForwardResult, Gradients, SimpleRng, TrainableWeights, TrainingSample,
+};
 
 // ---------- Error codes ----------
 
@@ -128,17 +130,8 @@ fn activation_from_u8(v: u8) -> Result<Activation, &'static str> {
 }
 
 fn build_feature_delta(added: &[usize], removed: &[usize]) -> Result<FeatureDelta, &'static str> {
-    if added.len() > 32 || removed.len() > 32 {
-        return Err("feature delta exceeds 32 entries per side");
-    }
-    let mut d = FeatureDelta::new();
-    for &i in added {
-        d.add(i);
-    }
-    for &i in removed {
-        d.remove(i);
-    }
-    Ok(d)
+    FeatureDelta::from_slices(added, removed)
+        .map_err(|_| "feature delta exceeds 32 entries per side")
 }
 
 // ---------- Trainer lifecycle ----------
@@ -254,10 +247,7 @@ pub unsafe extern "C" fn noru_trainer_forward(
 /// Gradients accumulate into the internal buffer — call
 /// [`noru_trainer_zero_grad`] between mini-batches.
 #[no_mangle]
-pub unsafe extern "C" fn noru_trainer_backward_bce(
-    handle: *mut NoruTrainer,
-    target: f32,
-) -> i32 {
+pub unsafe extern "C" fn noru_trainer_backward_bce(handle: *mut NoruTrainer, target: f32) -> i32 {
     guard(|| {
         clear_last_error();
         if handle.is_null() {
@@ -318,7 +308,9 @@ pub unsafe extern "C" fn noru_trainer_backward_raw_mse(
                 return NORU_ERR_STATE;
             }
         };
-        trainer.weights.backward_raw_mse(sample, fwd, &mut trainer.grad);
+        trainer
+            .weights
+            .backward_raw_mse(sample, fwd, &mut trainer.grad);
         NORU_OK
     })
 }
@@ -366,11 +358,7 @@ pub unsafe extern "C" fn noru_trainer_adam_step(
 
 // ---------- Serialization ----------
 
-unsafe fn vec_into_out_buf(
-    buf: Vec<u8>,
-    out_ptr: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
+unsafe fn vec_into_out_buf(buf: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
     if out_ptr.is_null() || out_len.is_null() {
         set_last_error("output pointer(s) are null");
         return NORU_ERR_NULL_PTR;
@@ -850,10 +838,7 @@ mod tests {
             noru_free_bytes(save_ptr, save_len);
 
             let mut weights_handle: *mut NoruWeights = ptr::null_mut();
-            assert_eq!(
-                noru_trainer_quantize(trainer, &mut weights_handle),
-                NORU_OK
-            );
+            assert_eq!(noru_trainer_quantize(trainer, &mut weights_handle), NORU_OK);
 
             let mut acc_handle: *mut NoruAccumulator = ptr::null_mut();
             assert_eq!(
@@ -879,35 +864,41 @@ mod tests {
 
             // Clone + copy_from + update_undo smoke test.
             let mut cloned_acc: *mut NoruAccumulator = ptr::null_mut();
-            assert_eq!(
-                noru_accumulator_clone(acc_handle, &mut cloned_acc),
-                NORU_OK
-            );
+            assert_eq!(noru_accumulator_clone(acc_handle, &mut cloned_acc), NORU_OK);
             assert!(!cloned_acc.is_null());
 
             let added: [u32; 1] = [3];
             assert_eq!(
                 noru_accumulator_update(
-                    acc_handle, weights_handle,
-                    added.as_ptr(), added.len(),
-                    ptr::null(), 0,
-                    ptr::null(), 0,
-                    ptr::null(), 0),
+                    acc_handle,
+                    weights_handle,
+                    added.as_ptr(),
+                    added.len(),
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    0
+                ),
                 NORU_OK
             );
             assert_eq!(
                 noru_accumulator_update_undo(
-                    acc_handle, weights_handle,
-                    added.as_ptr(), added.len(),
-                    ptr::null(), 0,
-                    ptr::null(), 0,
-                    ptr::null(), 0),
+                    acc_handle,
+                    weights_handle,
+                    added.as_ptr(),
+                    added.len(),
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    0
+                ),
                 NORU_OK
             );
-            assert_eq!(
-                noru_accumulator_copy_from(acc_handle, cloned_acc),
-                NORU_OK
-            );
+            assert_eq!(noru_accumulator_copy_from(acc_handle, cloned_acc), NORU_OK);
 
             noru_accumulator_free(cloned_acc);
             noru_accumulator_free(acc_handle);
@@ -923,6 +914,47 @@ mod tests {
             let rc = noru_trainer_zero_grad(ptr::null_mut());
             assert_eq!(rc, NORU_ERR_NULL_PTR);
             assert!(!noru_last_error().is_null());
+        }
+    }
+
+    #[test]
+    fn accumulator_update_rejects_oversized_delta() {
+        unsafe {
+            let hidden = [8usize];
+            let mut trainer: *mut NoruTrainer = ptr::null_mut();
+            assert_eq!(
+                noru_trainer_new(32, 16, hidden.as_ptr(), hidden.len(), 0, 99, &mut trainer),
+                NORU_OK
+            );
+
+            let mut weights_handle: *mut NoruWeights = ptr::null_mut();
+            assert_eq!(noru_trainer_quantize(trainer, &mut weights_handle), NORU_OK);
+
+            let mut acc_handle: *mut NoruAccumulator = ptr::null_mut();
+            assert_eq!(
+                noru_accumulator_new(weights_handle, &mut acc_handle),
+                NORU_OK
+            );
+
+            let oversized: Vec<u32> = (0..=32u32).collect();
+            let rc = noru_accumulator_update(
+                acc_handle,
+                weights_handle,
+                oversized.as_ptr(),
+                oversized.len(),
+                ptr::null(),
+                0,
+                ptr::null(),
+                0,
+                ptr::null(),
+                0,
+            );
+            assert_eq!(rc, NORU_ERR_INVALID_ARG);
+            assert!(!noru_last_error().is_null());
+
+            noru_accumulator_free(acc_handle);
+            noru_weights_free(weights_handle);
+            noru_trainer_free(trainer);
         }
     }
 }

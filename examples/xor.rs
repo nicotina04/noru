@@ -60,7 +60,10 @@ fn main() {
             total_loss += (fwd.sigmoid - sample.target).powi(2);
         }
         if step % 500 == 0 {
-            println!("  step {step:>4}: mean MSE (sigmoid) = {:.6}", total_loss / samples.len() as f32);
+            println!(
+                "  step {step:>4}: mean MSE (sigmoid) = {:.6}",
+                total_loss / samples.len() as f32
+            );
         }
     }
 
