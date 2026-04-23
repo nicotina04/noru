@@ -1,6 +1,7 @@
 /// NNUE network runtime configuration.
 ///
 /// Configure feature size, accumulator size, and hidden layer layout per game.
+use std::borrow::Cow;
 
 /// Activation function type.
 ///
@@ -13,19 +14,49 @@ pub enum Activation {
     SCReLU,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NnueConfig {
     /// Total input feature size
     pub feature_size: usize,
     /// Accumulator neurons per perspective
     pub accumulator_size: usize,
-    /// Hidden layer sizes (e.g. `&[64]` or `&[256, 32, 32]`)
-    pub hidden_sizes: &'static [usize],
+    /// Hidden layer sizes (e.g. `&[64]` or `vec![256, 32, 32]`)
+    pub hidden_sizes: Cow<'static, [usize]>,
     /// Activation function (applied to accumulator output only)
     pub activation: Activation,
 }
 
 impl NnueConfig {
+    /// Construct a config backed by a compile-time topology slice.
+    pub const fn new_static(
+        feature_size: usize,
+        accumulator_size: usize,
+        hidden_sizes: &'static [usize],
+        activation: Activation,
+    ) -> Self {
+        Self {
+            feature_size,
+            accumulator_size,
+            hidden_sizes: Cow::Borrowed(hidden_sizes),
+            activation,
+        }
+    }
+
+    /// Construct a config that owns its topology at runtime.
+    pub fn new_owned(
+        feature_size: usize,
+        accumulator_size: usize,
+        hidden_sizes: Vec<usize>,
+        activation: Activation,
+    ) -> Self {
+        Self {
+            feature_size,
+            accumulator_size,
+            hidden_sizes: Cow::Owned(hidden_sizes),
+            activation,
+        }
+    }
+
     /// Combined accumulator size (STM + NSTM)
     #[inline]
     pub fn concat_size(&self) -> usize {
@@ -60,10 +91,10 @@ impl NnueConfig {
 
 /// Owned, runtime-constructible variant of [`NnueConfig`].
 ///
-/// [`NnueConfig`] stores `hidden_sizes` as a `&'static [usize]` for zero-cost
-/// copying, which is ideal when the topology is known at compile time. When
-/// the topology must be built at runtime (FFI bindings, config files, GUI
-/// editors), use `OwnedNnueConfig` and convert via [`OwnedNnueConfig::leak`].
+/// [`NnueConfig`] can either borrow a compile-time topology or own a runtime
+/// one. When the topology must be built dynamically (FFI bindings, config
+/// files, GUI editors), use `OwnedNnueConfig` and convert via
+/// [`OwnedNnueConfig::into_config`] or `Into<NnueConfig>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedNnueConfig {
     pub feature_size: usize,
@@ -87,35 +118,21 @@ impl OwnedNnueConfig {
         }
     }
 
-    /// Consume `self` and produce a [`NnueConfig`] by leaking `hidden_sizes`
-    /// into a `&'static [usize]`.
-    ///
-    /// The leaked memory can be reclaimed later by passing the resulting
-    /// `NnueConfig.hidden_sizes` to [`reclaim_leaked_hidden_sizes`] — pair
-    /// every `leak` with exactly one `reclaim` to avoid an actual leak.
-    pub fn leak(self) -> NnueConfig {
-        let boxed: Box<[usize]> = self.hidden_sizes.into_boxed_slice();
-        let static_ref: &'static [usize] = Box::leak(boxed);
-        NnueConfig {
-            feature_size: self.feature_size,
-            accumulator_size: self.accumulator_size,
-            hidden_sizes: static_ref,
-            activation: self.activation,
-        }
+    /// Consume `self` and produce a [`NnueConfig`] that owns `hidden_sizes`.
+    pub fn into_config(self) -> NnueConfig {
+        NnueConfig::new_owned(
+            self.feature_size,
+            self.accumulator_size,
+            self.hidden_sizes,
+            self.activation,
+        )
     }
 }
 
-/// Reclaim a `hidden_sizes` slice previously produced by
-/// [`OwnedNnueConfig::leak`].
-///
-/// # Safety
-///
-/// `hidden_sizes` must be a slice that was produced by `OwnedNnueConfig::leak`
-/// and has not already been reclaimed. Passing any other slice — including a
-/// genuinely `'static` literal like `&[64]` — is undefined behavior.
-pub unsafe fn reclaim_leaked_hidden_sizes(hidden_sizes: &'static [usize]) {
-    let ptr = hidden_sizes as *const [usize] as *mut [usize];
-    drop(Box::from_raw(ptr));
+impl From<OwnedNnueConfig> for NnueConfig {
+    fn from(value: OwnedNnueConfig) -> Self {
+        value.into_config()
+    }
 }
 
 #[cfg(test)]
@@ -123,16 +140,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owned_config_leak_preserves_fields() {
+    fn owned_config_into_config_preserves_fields() {
         let owned = OwnedNnueConfig::new(768, 256, vec![256, 32, 32], Activation::SCReLU);
-        let config = owned.leak();
+        let config = owned.into_config();
         assert_eq!(config.feature_size, 768);
         assert_eq!(config.accumulator_size, 256);
-        assert_eq!(config.hidden_sizes, &[256, 32, 32]);
+        assert_eq!(config.hidden_sizes.as_ref(), &[256, 32, 32]);
         assert_eq!(config.activation, Activation::SCReLU);
         assert_eq!(config.concat_size(), 512);
         assert_eq!(config.num_hidden_layers(), 3);
         assert_eq!(config.last_hidden_size(), 32);
-        unsafe { reclaim_leaked_hidden_sizes(config.hidden_sizes) };
+    }
+
+    #[test]
+    fn static_config_keeps_borrowed_topology() {
+        let config = NnueConfig::new_static(530, 256, &[64], Activation::CReLU);
+        assert!(matches!(config.hidden_sizes, Cow::Borrowed(_)));
+        assert_eq!(config.hidden_sizes.as_ref(), &[64]);
     }
 }

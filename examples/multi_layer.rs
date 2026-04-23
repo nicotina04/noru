@@ -15,12 +15,7 @@ use noru::network::{forward, Accumulator};
 use noru::trainer::{AdamState, Gradients, SimpleRng, TrainableWeights, TrainingSample};
 
 // Stockfish-ish topology, scaled down for a runnable demo.
-const CONFIG: NnueConfig = NnueConfig {
-    feature_size: 32,
-    accumulator_size: 128,
-    hidden_sizes: &[32, 16, 16],
-    activation: Activation::SCReLU,
-};
+const CONFIG: NnueConfig = NnueConfig::new_static(32, 128, &[32, 16, 16], Activation::SCReLU);
 
 fn synthetic_sample(rng: &mut SimpleRng, idx: usize) -> TrainingSample {
     let stm_len = 4 + rng.next_usize(4);

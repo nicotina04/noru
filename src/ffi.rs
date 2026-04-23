@@ -25,7 +25,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::slice;
 
-use crate::config::{reclaim_leaked_hidden_sizes, Activation, OwnedNnueConfig};
+use crate::config::{Activation, NnueConfig, OwnedNnueConfig};
 use crate::network::{forward as nnue_forward, Accumulator, FeatureDelta, NnueWeights};
 use crate::trainer::{
     AdamState, ForwardResult, Gradients, SimpleRng, TrainableWeights, TrainingSample,
@@ -89,21 +89,9 @@ pub struct NoruTrainer {
     last_fwd: Option<ForwardResult>,
 }
 
-impl Drop for NoruTrainer {
-    fn drop(&mut self) {
-        unsafe { reclaim_leaked_hidden_sizes(self.weights.config.hidden_sizes) };
-    }
-}
-
 /// Inference weights handle (i16 quantized).
 pub struct NoruWeights {
     weights: NnueWeights,
-}
-
-impl Drop for NoruWeights {
-    fn drop(&mut self) {
-        unsafe { reclaim_leaked_hidden_sizes(self.weights.config.hidden_sizes) };
-    }
 }
 
 /// Accumulator handle for incremental inference.
@@ -174,12 +162,12 @@ pub unsafe extern "C" fn noru_trainer_new(
             }
         };
         let hidden = slice::from_raw_parts(hidden_sizes_ptr, hidden_sizes_len).to_vec();
-        let owned = OwnedNnueConfig::new(feature_size, accumulator_size, hidden, act);
-        let config = owned.leak();
+        let config: NnueConfig =
+            OwnedNnueConfig::new(feature_size, accumulator_size, hidden, act).into();
 
         let mut rng = SimpleRng::new(seed);
-        let weights = TrainableWeights::init_random(config, &mut rng);
-        let adam = AdamState::new(config);
+        let weights = TrainableWeights::init_random(config.clone(), &mut rng);
+        let adam = AdamState::new(config.clone());
         let grad = Gradients::new(config);
 
         let handle = Box::new(NoruTrainer {
@@ -416,8 +404,8 @@ pub unsafe extern "C" fn noru_trainer_load_fp32(
                 return NORU_ERR_IO;
             }
         };
-        let adam = AdamState::new(weights.config);
-        let grad = Gradients::new(weights.config);
+        let adam = AdamState::new(weights.config.clone());
+        let grad = Gradients::new(weights.config.clone());
         let handle = Box::new(NoruTrainer {
             weights,
             adam,
@@ -443,24 +431,9 @@ pub unsafe extern "C" fn noru_trainer_quantize(
             return NORU_ERR_NULL_PTR;
         }
         let trainer = &*handle;
-        let quantized = trainer.weights.quantize();
-
-        // `quantize()` reuses the trainer's leaked NnueConfig by value, so the
-        // resulting NnueWeights shares the same `&'static hidden_sizes`. The
-        // trainer handle still owns that allocation. To give the weights
-        // handle its own allocation (so it can be freed independently), clone
-        // the hidden_sizes into a fresh leaked slice.
-        let owned = OwnedNnueConfig::new(
-            quantized.config.feature_size,
-            quantized.config.accumulator_size,
-            quantized.config.hidden_sizes.to_vec(),
-            quantized.config.activation,
-        );
-        let fresh_config = owned.leak();
-        let mut weights = quantized;
-        weights.config = fresh_config;
-
-        let boxed = Box::new(NoruWeights { weights });
+        let boxed = Box::new(NoruWeights {
+            weights: trainer.weights.quantize(),
+        });
         *out_weights = Box::into_raw(boxed);
         NORU_OK
     })

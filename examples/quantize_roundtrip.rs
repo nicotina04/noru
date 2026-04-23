@@ -14,12 +14,7 @@ use noru::config::{Activation, NnueConfig};
 use noru::network::NnueWeights;
 use noru::trainer::{AdamState, Gradients, SimpleRng, TrainableWeights, TrainingSample};
 
-const CONFIG: NnueConfig = NnueConfig {
-    feature_size: 16,
-    accumulator_size: 64,
-    hidden_sizes: &[16],
-    activation: Activation::CReLU,
-};
+const CONFIG: NnueConfig = NnueConfig::new_static(16, 64, &[16], Activation::CReLU);
 
 fn main() {
     let mut rng = SimpleRng::new(7);

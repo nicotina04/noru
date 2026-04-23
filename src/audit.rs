@@ -246,12 +246,7 @@ mod tests {
     use crate::config::{Activation, NnueConfig};
 
     fn tiny_config() -> NnueConfig {
-        NnueConfig {
-            feature_size: 2,
-            accumulator_size: 1,
-            hidden_sizes: &[1],
-            activation: Activation::CReLU,
-        }
+        NnueConfig::new_static(2, 1, &[1], Activation::CReLU)
     }
 
     fn tiny_weights() -> TrainableWeights {

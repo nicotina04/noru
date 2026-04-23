@@ -9,12 +9,7 @@ use noru::config::{Activation, NnueConfig};
 use noru::network::{forward, Accumulator, FeatureDelta, NnueWeights};
 use noru::trainer::{AdamState, Gradients, SimpleRng, TrainableWeights, TrainingSample};
 
-const SMALL_CONFIG: NnueConfig = NnueConfig {
-    feature_size: 16,
-    accumulator_size: 32,
-    hidden_sizes: &[16],
-    activation: Activation::CReLU,
-};
+const SMALL_CONFIG: NnueConfig = NnueConfig::new_static(16, 32, &[16], Activation::CReLU);
 
 fn synthetic_samples(seed: u64, n: usize) -> Vec<TrainingSample> {
     let mut rng = SimpleRng::new(seed);

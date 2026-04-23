@@ -16,12 +16,7 @@ use noru::trainer::{AdamState, Gradients, SimpleRng, TrainableWeights, TrainingS
 
 // 4 total features; a feature is "active" when its bit is set.
 // Target mirrors an XOR-style signal over features {0,1}.
-const CONFIG: NnueConfig = NnueConfig {
-    feature_size: 4,
-    accumulator_size: 16,
-    hidden_sizes: &[8],
-    activation: Activation::CReLU,
-};
+const CONFIG: NnueConfig = NnueConfig::new_static(4, 16, &[8], Activation::CReLU);
 
 fn make_samples() -> Vec<TrainingSample> {
     // stm/nstm are mirrored here for simplicity; in a real game they'd differ.

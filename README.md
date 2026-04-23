@@ -54,17 +54,17 @@ use noru::config::{NnueConfig, Activation};
 use noru::trainer::{TrainableWeights, AdamState, Gradients, TrainingSample, SimpleRng};
 
 // 1. Define your network dimensions
-let config = NnueConfig {
-    feature_size: 530,         // your game's feature count
-    accumulator_size: 256,     // hidden accumulator neurons
-    hidden_sizes: &[64],       // hidden layer sizes (multi-layer: &[256, 32, 32])
-    activation: Activation::CReLU, // or Activation::SCReLU
-};
+let config = NnueConfig::new_static(
+    530,               // your game's feature count
+    256,               // hidden accumulator neurons
+    &[64],             // hidden layer sizes (multi-layer: &[256, 32, 32])
+    Activation::CReLU, // or Activation::SCReLU
+);
 
 // 2. Initialize weights
 let mut rng = SimpleRng::new(42);
-let mut weights = TrainableWeights::init_random(config, &mut rng);
-let mut adam = AdamState::new(config);
+let mut weights = TrainableWeights::init_random(config.clone(), &mut rng);
+let mut adam = AdamState::new(config.clone());
 
 // 3. Train on samples
 let sample = TrainingSample {
@@ -94,6 +94,7 @@ use noru::network::{NnueWeights, Accumulator, FeatureDelta, forward};
 let weights = NnueWeights::load_from_bytes(&model_bytes, None)?;
 
 // Or with legacy format (requires config)
+let config = NnueConfig::new_static(530, 256, &[64], Activation::CReLU);
 let weights = NnueWeights::load_from_bytes(&model_bytes, Some(config))?;
 
 // Evaluate a position
@@ -167,20 +168,10 @@ All dimensions are configured at runtime:
 
 ```rust
 // Simple (single hidden layer)
-let config = NnueConfig {
-    feature_size: 530,
-    accumulator_size: 256,
-    hidden_sizes: &[64],
-    activation: Activation::CReLU,
-};
+let config = NnueConfig::new_static(530, 256, &[64], Activation::CReLU);
 
 // Stockfish-style (multi-layer + SCReLU)
-let config = NnueConfig {
-    feature_size: 768,
-    accumulator_size: 1024,
-    hidden_sizes: &[256, 32, 32],
-    activation: Activation::SCReLU,
-};
+let config = NnueConfig::new_static(768, 1024, &[256, 32, 32], Activation::SCReLU);
 ```
 
 ## SIMD Acceleration
@@ -201,8 +192,8 @@ No configuration needed — the fastest available path is selected automatically
 
 | Type | Description |
 |------|-------------|
-| `NnueConfig` | Network dimensions and activation type (static `hidden_sizes`) |
-| `OwnedNnueConfig` | Runtime-constructible variant with `Vec<usize>` hidden sizes; convert via `.leak()` |
+| `NnueConfig` | Network dimensions and activation type (borrowed or owned `hidden_sizes`) |
+| `OwnedNnueConfig` | Runtime-constructible variant with `Vec<usize>` hidden sizes; convert via `.into_config()` |
 | `Activation` | Activation function enum (`CReLU`, `SCReLU`) |
 
 ### `noru::ffi` (C ABI, optional)
