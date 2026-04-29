@@ -1,25 +1,61 @@
 /// SIMD-accelerated primitives for NNUE inference.
 ///
-/// Platform dispatch:
+/// Platform dispatch (best → fallback):
+/// - x86_64 with AVX-512F + BW: 512-bit SIMD (32 × i16)
 /// - x86_64 with AVX2: 256-bit SIMD (16 × i16)
 /// - aarch64 with NEON: 128-bit SIMD (8 × i16)
-/// - Fallback: scalar implementation
+/// - Scalar fallback
 pub mod scalar;
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
 
+#[cfg(target_arch = "x86_64")]
+mod avx512;
+
 #[cfg(target_arch = "aarch64")]
 mod neon;
+
+/// Cached x86_64 dispatch tier. Computed once on first call to avoid
+/// redundant `is_x86_feature_detected` overhead on hot paths.
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum X86Tier {
+    Avx512,
+    Avx2,
+    Scalar,
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_tier() -> X86Tier {
+    use std::sync::OnceLock;
+    static TIER: OnceLock<X86Tier> = OnceLock::new();
+    *TIER.get_or_init(|| {
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+            X86Tier::Avx512
+        } else if is_x86_feature_detected!("avx2") {
+            X86Tier::Avx2
+        } else {
+            X86Tier::Scalar
+        }
+    })
+}
 
 /// Saturating i16 vector addition: `acc[i] += w[i]`
 #[inline]
 pub fn vec_add_i16(acc: &mut [i16], w: &[i16]) {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
-            unsafe { avx2::vec_add_i16(acc, w) };
-            return;
+        match x86_tier() {
+            X86Tier::Avx512 => {
+                unsafe { avx512::vec_add_i16(acc, w) };
+                return;
+            }
+            X86Tier::Avx2 => {
+                unsafe { avx2::vec_add_i16(acc, w) };
+                return;
+            }
+            X86Tier::Scalar => {}
         }
     }
     #[cfg(target_arch = "aarch64")]
@@ -35,9 +71,16 @@ pub fn vec_add_i16(acc: &mut [i16], w: &[i16]) {
 pub fn vec_sub_i16(acc: &mut [i16], w: &[i16]) {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
-            unsafe { avx2::vec_sub_i16(acc, w) };
-            return;
+        match x86_tier() {
+            X86Tier::Avx512 => {
+                unsafe { avx512::vec_sub_i16(acc, w) };
+                return;
+            }
+            X86Tier::Avx2 => {
+                unsafe { avx2::vec_sub_i16(acc, w) };
+                return;
+            }
+            X86Tier::Scalar => {}
         }
     }
     #[cfg(target_arch = "aarch64")]
@@ -53,9 +96,16 @@ pub fn vec_sub_i16(acc: &mut [i16], w: &[i16]) {
 pub fn vec_clipped_relu(out: &mut [i16], inp: &[i16]) {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
-            unsafe { avx2::vec_clipped_relu(out, inp) };
-            return;
+        match x86_tier() {
+            X86Tier::Avx512 => {
+                unsafe { avx512::vec_clipped_relu(out, inp) };
+                return;
+            }
+            X86Tier::Avx2 => {
+                unsafe { avx2::vec_clipped_relu(out, inp) };
+                return;
+            }
+            X86Tier::Scalar => {}
         }
     }
     #[cfg(target_arch = "aarch64")]
@@ -71,8 +121,10 @@ pub fn vec_clipped_relu(out: &mut [i16], inp: &[i16]) {
 pub fn dot_i16_i32(a: &[i16], b: &[i16]) -> i32 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
-            return unsafe { avx2::dot_i16_i32(a, b) };
+        match x86_tier() {
+            X86Tier::Avx512 => return unsafe { avx512::dot_i16_i32(a, b) },
+            X86Tier::Avx2 => return unsafe { avx2::dot_i16_i32(a, b) },
+            X86Tier::Scalar => {}
         }
     }
     #[cfg(target_arch = "aarch64")]
@@ -87,8 +139,10 @@ pub fn dot_i16_i32(a: &[i16], b: &[i16]) -> i32 {
 pub fn dot_screlu_i64(a: &[i16], b: &[i16]) -> i64 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
-            return unsafe { avx2::dot_screlu_i64(a, b) };
+        match x86_tier() {
+            X86Tier::Avx512 => return unsafe { avx512::dot_screlu_i64(a, b) },
+            X86Tier::Avx2 => return unsafe { avx2::dot_screlu_i64(a, b) },
+            X86Tier::Scalar => {}
         }
     }
     #[cfg(target_arch = "aarch64")]
