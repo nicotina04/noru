@@ -1,6 +1,6 @@
 [package]
 name = "noru"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2021"
 description = "Zero-dependency NNUE training & inference library in pure Rust"
 license = "MIT OR Apache-2.0"
@@ -12,5 +12,14 @@ readme = "README.md"
 [lib]
 name = "noru"
 crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Enables the AVX-512F+BW SIMD path (32 × i16 lanes, ~2× wider vs AVX2).
+# Requires Rust ≥ 1.89 where `target_feature = "avx512f"` / `"avx512bw"` are
+# stable. On older toolchains this fails to compile, so it's opt-in via
+# `noru = { version = "2.1", features = ["avx512"] }` — older toolchains
+# silently fall back to the AVX2 dispatch tier.
+avx512 = []
 
 [dependencies]
