@@ -32,8 +32,15 @@ The motivating use case is non-chess game AI. NNUE has become a proven design
 for strong board-game evaluation, but most practical implementations are
 embedded inside a single engine and tied to that engine's feature encoding,
 search assumptions, and deployment path [@nasu2018nnue; @stockfish2026;
-@rapfi2026]. NORU factors out the reusable pieces into a standalone Rust
-library that remains light enough for direct inclusion in game-engine code.
+@rapfi2026]. Standalone NNUE trainers also exist, most notably bullet
+[@bullet2026], but bullet targets the high-throughput chess pipeline:
+CUDA-only training and HalfKA-style feature layouts inherited from Stockfish.
+NORU is positioned as a complement rather than a replacement: it covers
+deployment frontiers where bullet's GPU-and-chess assumptions do not apply,
+namely CPU-only environments, runtime-configurable non-chess feature schemas,
+and embedded inference targets. It factors out the reusable pieces into a
+standalone Rust library that remains light enough for direct inclusion in
+game-engine code.
 
 # Statement of need
 
@@ -42,7 +49,11 @@ often face an awkward trade-off when adopting NNUE. One option is to fork a
 domain-specific engine such as Stockfish or Rapfi and then adapt large amounts
 of unrelated search, protocol, and feature-extraction code before reaching the
 neural-network parts that are actually needed [@stockfish2026; @rapfi2026].
-The other option is to train models in a general-purpose framework such as
+A second option is to use a dedicated NNUE trainer such as bullet
+[@bullet2026], but its tight coupling to CUDA and to chess-specific HalfKA
+feature layouts excludes researchers without GPU access, projects targeting
+non-chess feature schemas, and embedded or low-resource deployment targets.
+The third option is to train models in a general-purpose framework such as
 PyTorch and then separately build a custom CPU inference path, quantization
 pipeline, binary format, and foreign-function interface for deployment
 [@paszke2019pytorch].
@@ -78,17 +89,27 @@ such as Rapfi [@rapfi2026].
 
 These systems prove the value of NNUE, but they are not general-purpose
 research libraries. Their implementations are coupled to one game's feature
-schema and to the surrounding engine architecture. At the other end of the
-spectrum, machine-learning frameworks such as PyTorch provide flexible training
-tooling but intentionally leave deployment-specific concerns, CPU quantization,
-incremental state maintenance, and engine integration to the application layer
+schema and to the surrounding engine architecture. The closest existing
+standalone trainer is bullet [@bullet2026], a dedicated CUDA-accelerated
+NNUE trainer that powers a substantial portion of contemporary Stockfish
+development. Its design strengths, large-batch GPU throughput and tight
+integration with chess HalfKA feature pipelines, are inseparable from the
+assumptions that produce them: a GPU is required, and the feature interface
+is shaped around chess-style piece-square enumerations. NORU and bullet
+therefore occupy different deployment frontiers rather than competing on the
+same axis. At the other end of the spectrum, machine-learning frameworks
+such as PyTorch provide flexible training tooling but intentionally leave
+deployment-specific concerns, CPU quantization, incremental state
+maintenance, and engine integration to the application layer
 [@paszke2019pytorch].
 
-NORU occupies the middle ground. It is narrower than a full ML framework and
-broader than a single-engine implementation. The library deliberately focuses
-on the part that is reusable across domains: sparse-feature NNUE definition,
-incremental accumulator management, training support, quantized CPU inference,
-and reproducible weight serialization.
+NORU occupies the middle ground between an engine-internal NNUE module and
+a general ML framework, and a complementary niche to GPU-bound chess-tuned
+trainers such as bullet. It is narrower than a full ML framework, broader
+than a single-engine implementation, and CPU-first by design. The library
+deliberately focuses on the part that is reusable across domains:
+sparse-feature NNUE definition, incremental accumulator management, training
+support, quantized CPU inference, and reproducible weight serialization.
 
 # Software design
 
