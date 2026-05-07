@@ -126,7 +126,7 @@ pub fn audit_quantized_model<T: FeatureSet>(
         let stm = position.stm_features();
         let nstm = position.nstm_features();
 
-        let fp32_output = fp32.forward(stm, nstm).output;
+        let fp32_output = fp32.forward(stm, nstm, &[]).output;
         let mut acc = Accumulator::new(&quantized.feature_bias);
         acc.refresh(quantized, stm, nstm);
         let i16_output = forward(&acc, quantized);
@@ -259,6 +259,7 @@ mod tests {
             hidden_biases: vec![vec![0.0]],
             output_weight: vec![1.0],
             output_bias: -0.5,
+            dense_to_acc: Vec::new(),
         }
     }
 

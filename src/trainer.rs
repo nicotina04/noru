@@ -14,7 +14,9 @@ const EPSILON: f32 = 1e-8;
 
 /// FP32 checkpoint magic ("NRUF" in little-endian bytes).
 const FP32_MAGIC: u32 = 0x4655524E;
-const FP32_VERSION: u32 = 1;
+/// Bumped to 2 when the optional dense-input projection branch was added.
+/// v1 checkpoints still load (dense_to_acc reconstructed as empty).
+const FP32_VERSION: u32 = 2;
 
 /// FP32 trainable weights.
 #[derive(Clone)]
@@ -26,6 +28,11 @@ pub struct TrainableWeights {
     pub hidden_biases: Vec<Vec<f32>>, // \[num_layers\]\[output_size\]
     pub output_weight: Vec<f32>,  // \[last_hidden_size\]
     pub output_bias: f32,
+    /// Optional dense-input projection weights, mirroring
+    /// `NnueWeights::dense_to_acc` in FP32. Shape
+    /// `[dense_input_size][accumulator_size]`. Empty when the dense
+    /// branch is disabled (`config.dense_input_size == 0`).
+    pub dense_to_acc: Vec<Vec<f32>>,
 }
 
 /// Adam optimizer state.
@@ -43,6 +50,10 @@ pub struct AdamState {
     output_weight_v: Vec<f32>,
     output_bias_m: f32,
     output_bias_v: f32,
+    /// Adam moments for `dense_to_acc`. Same shape as the parameter tensor;
+    /// empty when the dense branch is disabled.
+    dense_to_acc_m: Vec<Vec<f32>>,
+    dense_to_acc_v: Vec<Vec<f32>>,
     pub step: u32,
 }
 
@@ -65,6 +76,14 @@ impl AdamState {
             hb_v.push(vec![0.0; out_size]);
         }
 
+        let dense_input_size = config.dense_input_size;
+        let dense_to_acc_m = if dense_input_size == 0 {
+            Vec::new()
+        } else {
+            vec![vec![0.0f32; acc]; dense_input_size]
+        };
+        let dense_to_acc_v = dense_to_acc_m.clone();
+
         Self {
             ft_weight_m: vec![vec![0.0; acc]; config.feature_size],
             ft_weight_v: vec![vec![0.0; acc]; config.feature_size],
@@ -78,6 +97,8 @@ impl AdamState {
             output_weight_v: vec![0.0; config.last_hidden_size()],
             output_bias_m: 0.0,
             output_bias_v: 0.0,
+            dense_to_acc_m,
+            dense_to_acc_v,
             step: 0,
         }
     }
@@ -92,6 +113,9 @@ pub struct Gradients {
     pub hidden_biases: Vec<Vec<f32>>,
     pub output_weight: Vec<f32>,
     pub output_bias: f32,
+    /// Gradient buffer for `dense_to_acc`. Same shape as the parameter.
+    /// Empty when the dense branch is disabled.
+    pub dense_to_acc: Vec<Vec<f32>>,
 }
 
 impl Gradients {
@@ -111,6 +135,13 @@ impl Gradients {
             hb.push(vec![0.0; out_size]);
         }
 
+        let dense_input_size = config.dense_input_size;
+        let dense_to_acc = if dense_input_size == 0 {
+            Vec::new()
+        } else {
+            vec![vec![0.0f32; acc]; dense_input_size]
+        };
+
         Self {
             config,
             ft_weight: vec![vec![0.0; acc]; feature_size],
@@ -119,6 +150,7 @@ impl Gradients {
             hidden_biases: hb,
             output_weight: vec![0.0; last_hidden_size],
             output_bias: 0.0,
+            dense_to_acc,
         }
     }
 
@@ -141,6 +173,11 @@ impl Gradients {
         }
         self.output_weight.iter_mut().for_each(|v| *v = 0.0);
         self.output_bias = 0.0;
+        for row in self.dense_to_acc.iter_mut() {
+            for v in row.iter_mut() {
+                *v = 0.0;
+            }
+        }
     }
 }
 
@@ -149,6 +186,11 @@ pub struct TrainingSample {
     pub stm_features: Vec<usize>,
     pub nstm_features: Vec<usize>,
     pub target: f32,
+    /// Optional dense input vector for the projection branch
+    /// (`config.dense_input_size`). Empty (the default for legacy
+    /// callers) skips the dense pathway entirely; otherwise its length
+    /// must equal `config.dense_input_size`.
+    pub dense_input: Vec<f32>,
 }
 
 /// Forward pass intermediate results.
@@ -207,6 +249,23 @@ impl TrainableWeights {
             *v = rng.next_normal() * output_scale;
         }
 
+        // Dense-input projection — Kaiming-flavored small init mirroring the
+        // sparse feature path. Empty when the dense branch is disabled, so
+        // the legacy sparse-only network produces an identical layout.
+        let dense_input_size = config.dense_input_size;
+        let dense_to_acc = if dense_input_size == 0 {
+            Vec::new()
+        } else {
+            let scale = (2.0 / acc as f32).sqrt() * 0.1;
+            let mut t = vec![vec![0.0f32; acc]; dense_input_size];
+            for row in t.iter_mut() {
+                for v in row.iter_mut() {
+                    *v = rng.next_normal() * scale;
+                }
+            }
+            t
+        };
+
         Self {
             config,
             ft_weight,
@@ -215,11 +274,23 @@ impl TrainableWeights {
             hidden_biases,
             output_weight,
             output_bias: 0.0,
+            dense_to_acc,
         }
     }
 
     /// FP32 forward pass (for training).
-    pub fn forward(&self, stm_features: &[usize], nstm_features: &[usize]) -> ForwardResult {
+    ///
+    /// `dense_input` is the optional projection branch input. Pass `&[]` to
+    /// skip dense entirely; otherwise its length must equal
+    /// `self.config.dense_input_size`. The dense projection is
+    /// perspective-symmetric: each non-zero entry adds the same scaled
+    /// weight row to both STM and NSTM accumulators before the activation.
+    pub fn forward(
+        &self,
+        stm_features: &[usize],
+        nstm_features: &[usize],
+        dense_input: &[f32],
+    ) -> ForwardResult {
         let acc = self.config.accumulator_size;
         let num_layers = self.config.num_hidden_layers();
         let use_screlu = self.config.activation == Activation::SCReLU;
@@ -236,6 +307,29 @@ impl TrainableWeights {
         for &feat in nstm_features {
             for i in 0..acc {
                 acc_nstm[i] += self.ft_weight[feat][i];
+            }
+        }
+
+        // Optional dense-input projection (Phase A.1, 2026-05-07).
+        // Adds the same projection to both perspectives so the rest of the
+        // pipeline sees a single combined accumulator state. Backward pass
+        // mirrors this — see `backward_inner` below.
+        if !dense_input.is_empty() {
+            debug_assert_eq!(
+                dense_input.len(),
+                self.config.dense_input_size,
+                "dense_input length must match config.dense_input_size",
+            );
+            for (slot, &x) in dense_input.iter().enumerate() {
+                if x == 0.0 {
+                    continue;
+                }
+                let row = &self.dense_to_acc[slot];
+                for i in 0..acc {
+                    let contrib = row[i] * x;
+                    acc_stm[i] += contrib;
+                    acc_nstm[i] += contrib;
+                }
             }
         }
 
@@ -443,6 +537,27 @@ impl TrainableWeights {
                         grad.ft_weight[feat][i] += d_acc[acc + i];
                     }
                 }
+
+                // Dense-input projection gradient. The same `dense_to_acc[slot]`
+                // row was added to both perspectives in the forward pass, so
+                // its gradient picks up contributions from both halves of
+                // `d_acc`. Skipped when the sample has no dense input —
+                // legacy callers stay byte-for-byte identical.
+                if !sample.dense_input.is_empty() {
+                    debug_assert_eq!(
+                        sample.dense_input.len(),
+                        self.config.dense_input_size,
+                        "dense_input length must match config.dense_input_size",
+                    );
+                    for (slot, &x) in sample.dense_input.iter().enumerate() {
+                        if x == 0.0 {
+                            continue;
+                        }
+                        for i in 0..acc {
+                            grad.dense_to_acc[slot][i] += (d_acc[i] + d_acc[acc + i]) * x;
+                        }
+                    }
+                }
             }
         }
     }
@@ -559,6 +674,30 @@ impl TrainableWeights {
                 bc2,
             );
         }
+
+        // Dense-input projection. Skipped automatically when the dense
+        // branch is disabled (`dense_to_acc` is empty in both the params
+        // and the optimizer state).
+        if !self.dense_to_acc.is_empty() {
+            for slot in 0..self.dense_to_acc.len() {
+                let any_nonzero = grad.dense_to_acc[slot].iter().any(|&g| g != 0.0);
+                if !any_nonzero {
+                    continue;
+                }
+                for i in 0..acc {
+                    let g = grad.dense_to_acc[slot][i] * scale;
+                    adam_step(
+                        &mut self.dense_to_acc[slot][i],
+                        g,
+                        &mut state.dense_to_acc_m[slot][i],
+                        &mut state.dense_to_acc_v[slot][i],
+                        lr,
+                        bc1,
+                        bc2,
+                    );
+                }
+            }
+        }
     }
 
     /// Serialize FP32 weights to a self-describing binary blob.
@@ -611,6 +750,15 @@ impl TrainableWeights {
         }
         write_f32(&mut buf, self.output_bias);
 
+        // v2 fields: dense_input_size + dense_to_acc weights. v1 layouts
+        // simply omit these; the loader reconstructs them as 0 / empty.
+        buf.extend_from_slice(&(self.config.dense_input_size as u32).to_le_bytes());
+        for row in &self.dense_to_acc {
+            for &v in row {
+                write_f32(&mut buf, v);
+            }
+        }
+
         buf
     }
 
@@ -653,7 +801,7 @@ impl TrainableWeights {
             return Err("invalid fp32 magic");
         }
         let version = read_u32(&mut cursor)?;
-        if version != FP32_VERSION {
+        if version != 1 && version != FP32_VERSION {
             return Err("unsupported fp32 version");
         }
 
@@ -724,6 +872,28 @@ impl TrainableWeights {
         }
         let output_bias = read_f32(&mut cursor)?;
 
+        // v2 dense-input projection. v1 files end here; missing dense
+        // section is treated as `dense_input_size = 0` and an empty
+        // `dense_to_acc`, matching the legacy sparse-only network.
+        let (dense_input_size, dense_to_acc) = if version >= 2 {
+            let size = read_u32(&mut cursor)? as usize;
+            if size == 0 {
+                (0, Vec::new())
+            } else {
+                let mut t = vec![vec![0.0f32; accumulator_size]; size];
+                for row in t.iter_mut() {
+                    for v in row.iter_mut() {
+                        *v = read_f32(&mut cursor)?;
+                    }
+                }
+                (size, t)
+            }
+        } else {
+            (0, Vec::new())
+        };
+
+        let config = config.with_dense_input(dense_input_size);
+
         Ok(Self {
             config,
             ft_weight,
@@ -732,6 +902,7 @@ impl TrainableWeights {
             hidden_biases,
             output_weight,
             output_bias,
+            dense_to_acc,
         })
     }
 
@@ -774,6 +945,18 @@ impl TrainableWeights {
             weights.output_weights[j] = (self.output_weight[j] * scale).round() as i16;
         }
         weights.output_bias = (self.output_bias * scale).round() as i16;
+
+        // Dense-input projection — skip the loop entirely when the branch
+        // is disabled so the inference-side allocator never sees a stray
+        // empty Vec where it expects no data.
+        if !self.dense_to_acc.is_empty() {
+            for slot in 0..self.dense_to_acc.len() {
+                for i in 0..acc {
+                    weights.dense_to_acc[slot][i] =
+                        (self.dense_to_acc[slot][i] * scale).round() as i16;
+                }
+            }
+        }
 
         weights
     }
@@ -850,9 +1033,10 @@ mod tests {
             stm_features: vec![0, 100, 300],
             nstm_features: vec![50, 200],
             target: 1.0,
+            dense_input: Vec::new(),
         };
 
-        let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         assert!(fwd.sigmoid > 0.0 && fwd.sigmoid < 1.0);
 
         let mut grad = Gradients::new(config.clone());
@@ -873,20 +1057,21 @@ mod tests {
             stm_features: vec![10, 20, 30],
             nstm_features: vec![40, 50],
             target: 1.0,
+            dense_input: Vec::new(),
         };
 
-        let fwd_before = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd_before = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         let loss_before = -sample.target * fwd_before.sigmoid.ln()
             - (1.0 - sample.target) * (1.0 - fwd_before.sigmoid).ln();
 
         for _ in 0..100 {
             let mut grad = Gradients::new(config.clone());
-            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
             weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
         }
 
-        let fwd_after = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd_after = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         let loss_after = -sample.target * fwd_after.sigmoid.ln()
             - (1.0 - sample.target) * (1.0 - fwd_after.sigmoid).ln();
 
@@ -921,9 +1106,10 @@ mod tests {
             stm_features: vec![0, 10, 20],
             nstm_features: vec![5, 15],
             target: 0.7,
+            dense_input: Vec::new(),
         };
 
-        let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         assert!(fwd.sigmoid > 0.0 && fwd.sigmoid < 1.0);
         assert_eq!(fwd.hidden_raws.len(), 2);
         assert_eq!(fwd.hidden_activations.len(), 2);
@@ -948,20 +1134,21 @@ mod tests {
             stm_features: vec![1, 5, 10],
             nstm_features: vec![3, 7],
             target: 1.0,
+            dense_input: Vec::new(),
         };
 
-        let fwd_before = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd_before = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         let loss_before = -sample.target * fwd_before.sigmoid.ln()
             - (1.0 - sample.target) * (1.0 - fwd_before.sigmoid).ln();
 
         for _ in 0..200 {
             let mut grad = Gradients::new(config.clone());
-            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
             weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
         }
 
-        let fwd_after = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd_after = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         let loss_after = -sample.target * fwd_after.sigmoid.ln()
             - (1.0 - sample.target) * (1.0 - fwd_after.sigmoid).ln();
 
@@ -981,9 +1168,10 @@ mod tests {
             stm_features: vec![0, 10, 20],
             nstm_features: vec![5, 15],
             target: 0.5,
+            dense_input: Vec::new(),
         };
 
-        let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         assert!(fwd.sigmoid > 0.0 && fwd.sigmoid < 1.0);
 
         let mut grad = Gradients::new(config.clone());
@@ -1004,20 +1192,21 @@ mod tests {
             stm_features: vec![1, 5, 10],
             nstm_features: vec![3, 7],
             target: 1.0,
+            dense_input: Vec::new(),
         };
 
-        let fwd_before = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd_before = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         let loss_before = -sample.target * fwd_before.sigmoid.ln()
             - (1.0 - sample.target) * (1.0 - fwd_before.sigmoid).ln();
 
         for _ in 0..200 {
             let mut grad = Gradients::new(config.clone());
-            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
             weights.backward_bce(&sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut state, 0.01, 1.0);
         }
 
-        let fwd_after = weights.forward(&sample.stm_features, &sample.nstm_features);
+        let fwd_after = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
         let loss_after = -sample.target * fwd_after.sigmoid.ln()
             - (1.0 - sample.target) * (1.0 - fwd_after.sigmoid).ln();
 
@@ -1069,9 +1258,10 @@ mod tests {
             stm_features: vec![1, 5, 10],
             nstm_features: vec![2, 7, 15],
             target: 0.5,
+            dense_input: Vec::new(),
         };
-        let f1 = original.forward(&sample.stm_features, &sample.nstm_features);
-        let f2 = restored.forward(&sample.stm_features, &sample.nstm_features);
+        let f1 = original.forward(&sample.stm_features, &sample.nstm_features, &[]);
+        let f2 = restored.forward(&sample.stm_features, &sample.nstm_features, &[]);
         assert_eq!(f1.output, f2.output);
     }
 

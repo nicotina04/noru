@@ -32,6 +32,7 @@ fn make_samples() -> Vec<TrainingSample> {
             stm_features: stm.clone(),
             nstm_features: nstm.clone(),
             target: *target,
+            dense_input: Vec::new(),
         })
         .collect()
 }
@@ -46,7 +47,7 @@ fn main() {
     for step in 0..2000 {
         let mut total_loss = 0.0_f32;
         for sample in &samples {
-            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
             let mut grad = Gradients::new(CONFIG);
             weights.backward_bce(sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut adam, 1e-2, 1.0);

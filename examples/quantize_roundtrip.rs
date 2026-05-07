@@ -41,13 +41,14 @@ fn main() {
                 stm_features: stm,
                 nstm_features: nstm,
                 target,
+                            dense_input: Vec::new(),
             }
         })
         .collect();
 
     for _ in 0..500 {
         for sample in &samples {
-            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
             let mut grad = Gradients::new(CONFIG);
             weights.backward_bce(sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut adam, 1e-2, 1.0);

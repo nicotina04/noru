@@ -214,7 +214,10 @@ pub unsafe extern "C" fn noru_trainer_forward(
         let stm = slice_from_raw_usize(stm_ptr, stm_len);
         let nstm = slice_from_raw_usize(nstm_ptr, nstm_len);
 
-        let fwd = trainer.weights.forward(&stm, &nstm);
+        // FFI surface stays sparse-only for now: no dense_input is exposed
+        // through the C ABI yet. Pass an empty slice so the trainer skips
+        // the dense branch even if the loaded config has it enabled.
+        let fwd = trainer.weights.forward(&stm, &nstm, &[]);
         if !out_eval.is_null() {
             *out_eval = fwd.output;
         }
@@ -222,6 +225,7 @@ pub unsafe extern "C" fn noru_trainer_forward(
             stm_features: stm,
             nstm_features: nstm,
             target: 0.0,
+            dense_input: Vec::new(),
         });
         trainer.last_fwd = Some(fwd);
         NORU_OK

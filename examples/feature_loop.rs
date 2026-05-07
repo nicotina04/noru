@@ -176,6 +176,7 @@ fn make_samples(rng: &mut SimpleRng, count: usize) -> Vec<(MiniBoard, TrainingSa
                 stm_features,
                 nstm_features,
                 target: handcrafted_target(&board),
+                dense_input: Vec::new(),
             };
             (board, sample)
         })
@@ -190,7 +191,7 @@ fn main() {
 
     for _ in 0..200 {
         for (_, sample) in &dataset {
-            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features);
+            let fwd = weights.forward(&sample.stm_features, &sample.nstm_features, &[]);
             let mut grad = Gradients::new(CONFIG);
             weights.backward_bce(sample, &fwd, &mut grad);
             weights.adam_update(&grad, &mut adam, 5e-3, 1.0);
@@ -199,7 +200,7 @@ fn main() {
 
     let (board, sample) = &dataset[0];
     let fp32 = weights
-        .forward(&sample.stm_features, &sample.nstm_features)
+        .forward(&sample.stm_features, &sample.nstm_features, &[])
         .sigmoid;
     let quantized = weights.quantize();
     let mut acc = Accumulator::new(&quantized.feature_bias);
