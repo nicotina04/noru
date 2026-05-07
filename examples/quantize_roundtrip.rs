@@ -41,7 +41,7 @@ fn main() {
                 stm_features: stm,
                 nstm_features: nstm,
                 target,
-                            dense_input: Vec::new(),
+                dense_input: Vec::new(),
             }
         })
         .collect();

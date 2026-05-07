@@ -251,7 +251,11 @@ fn fp32_checkpoint_roundtrip_preserves_dense_weights() {
 
     assert_eq!(restored.config.dense_input_size, 4);
     assert_eq!(original.dense_to_acc.len(), restored.dense_to_acc.len());
-    for (a, b) in original.dense_to_acc.iter().zip(restored.dense_to_acc.iter()) {
+    for (a, b) in original
+        .dense_to_acc
+        .iter()
+        .zip(restored.dense_to_acc.iter())
+    {
         assert_eq!(a, b);
     }
 }

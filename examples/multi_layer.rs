@@ -41,7 +41,7 @@ fn synthetic_sample(rng: &mut SimpleRng, idx: usize) -> TrainingSample {
         stm_features: stm,
         nstm_features: nstm,
         target,
-            dense_input: Vec::new(),
+        dense_input: Vec::new(),
     }
 }
 
