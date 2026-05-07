@@ -24,6 +24,14 @@ pub struct NnueConfig {
     pub hidden_sizes: Cow<'static, [usize]>,
     /// Activation function (applied to accumulator output only)
     pub activation: Activation,
+    /// Optional dense-input branch size. `0` (the default for legacy
+    /// configurations) keeps the sparse-only NNUE behavior. When set,
+    /// callers can supply an extra `&[f32; dense_input_size]` per
+    /// position and the network projects it through `dense_to_acc`
+    /// straight into the accumulator (added to the sparse-feature sum).
+    /// Updates remain efficient when the dense vector itself is
+    /// maintained incrementally by the host engine.
+    pub dense_input_size: usize,
 }
 
 impl NnueConfig {
@@ -39,6 +47,7 @@ impl NnueConfig {
             accumulator_size,
             hidden_sizes: Cow::Borrowed(hidden_sizes),
             activation,
+            dense_input_size: 0,
         }
     }
 
@@ -54,7 +63,23 @@ impl NnueConfig {
             accumulator_size,
             hidden_sizes: Cow::Owned(hidden_sizes),
             activation,
+            dense_input_size: 0,
         }
+    }
+
+    /// `with_dense_input` enables the dense-input projection branch by
+    /// returning a copy of `self` with `dense_input_size` set to `size`.
+    /// All construction paths default to no dense branch; callers opt in.
+    #[inline]
+    pub fn with_dense_input(mut self, size: usize) -> Self {
+        self.dense_input_size = size;
+        self
+    }
+
+    /// Whether the dense-input projection branch is enabled.
+    #[inline]
+    pub fn has_dense_input(&self) -> bool {
+        self.dense_input_size > 0
     }
 
     /// Combined accumulator size (STM + NSTM)
@@ -101,6 +126,9 @@ pub struct OwnedNnueConfig {
     pub accumulator_size: usize,
     pub hidden_sizes: Vec<usize>,
     pub activation: Activation,
+    /// Optional dense-input branch size (see [`NnueConfig::dense_input_size`]).
+    /// Defaults to `0` when constructed via [`OwnedNnueConfig::new`].
+    pub dense_input_size: usize,
 }
 
 impl OwnedNnueConfig {
@@ -115,6 +143,7 @@ impl OwnedNnueConfig {
             accumulator_size,
             hidden_sizes,
             activation,
+            dense_input_size: 0,
         }
     }
 
@@ -126,6 +155,7 @@ impl OwnedNnueConfig {
             self.hidden_sizes,
             self.activation,
         )
+        .with_dense_input(self.dense_input_size)
     }
 }
 

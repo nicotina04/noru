@@ -16,7 +16,12 @@ pub const MAX_FEATURE_DELTA: usize = 32;
 
 // Binary format v2 magic number: "NORU" in little-endian
 const MAGIC: u32 = 0x4E4F5255;
-const FORMAT_VERSION: u32 = 2;
+/// Current binary format version emitted by `save_to_bytes`. v3 extends v2
+/// with an optional dense-input projection branch (`dense_input_size`
+/// header field + `dense_to_acc` weights after the output bias). The
+/// loader still accepts v2 files for backward compatibility — v2 weights
+/// are loaded with `dense_input_size = 0` and an empty `dense_to_acc`.
+const FORMAT_VERSION: u32 = 3;
 
 /// Feature delta for incremental accumulator update.
 #[derive(Debug, Clone, Copy)]
@@ -142,6 +147,13 @@ pub struct NnueWeights {
     pub output_weights: Vec<i16>,
     /// Output bias
     pub output_bias: i16,
+    /// Optional dense-input projection: `[dense_input_size][accumulator_size]`
+    /// flattened in row-major order (one inner Vec per dense input slot).
+    /// Empty when `config.dense_input_size == 0` (sparse-only network).
+    /// Multiplied by the host-supplied dense input vector and added to
+    /// **both** STM and NSTM accumulator perspectives during refresh and
+    /// incremental update — see [`Accumulator::apply_dense_input`].
+    pub dense_to_acc: Vec<Vec<i16>>,
 }
 
 impl NnueWeights {
@@ -162,6 +174,13 @@ impl NnueWeights {
             hidden_biases.push(vec![0i16; out_size]);
         }
 
+        let dense_input_size = config.dense_input_size;
+        let dense_to_acc = if dense_input_size == 0 {
+            Vec::new()
+        } else {
+            vec![vec![0i16; accumulator_size]; dense_input_size]
+        };
+
         Self {
             config,
             feature_weights: vec![vec![0i16; accumulator_size]; feature_size],
@@ -170,6 +189,7 @@ impl NnueWeights {
             hidden_biases,
             output_weights: vec![0i16; last_hidden_size],
             output_bias: 0,
+            dense_to_acc,
         }
     }
 
@@ -200,6 +220,9 @@ impl NnueWeights {
         };
         buf.push(act_byte);
 
+        // v3 header field: dense_input_size (always written, may be 0).
+        buf.extend_from_slice(&(self.config.dense_input_size as u32).to_le_bytes());
+
         let write_i16_slice = |buf: &mut Vec<u8>, data: &[i16]| {
             for &v in data {
                 buf.extend_from_slice(&v.to_le_bytes());
@@ -229,6 +252,14 @@ impl NnueWeights {
         // Output
         write_i16_slice(&mut buf, &self.output_weights);
         buf.extend_from_slice(&self.output_bias.to_le_bytes());
+
+        // v3 dense-input projection weights (one inner Vec per dense slot,
+        // each of length `accumulator_size`). Skipped entirely when the
+        // dense branch is disabled — keeps the wire format identical to v2
+        // for sparse-only configurations.
+        for row in &self.dense_to_acc {
+            write_i16_slice(&mut buf, row);
+        }
 
         buf
     }
@@ -270,7 +301,7 @@ impl NnueWeights {
             return Err("invalid magic number");
         }
         let version = read_u32(&mut cursor)?;
-        if version != FORMAT_VERSION {
+        if version != 2 && version != FORMAT_VERSION {
             return Err("unsupported format version");
         }
 
@@ -297,12 +328,22 @@ impl NnueWeights {
         };
         cursor += 1;
 
+        // v3 added an explicit `dense_input_size: u32` after the activation
+        // byte. v2 files have no such field, so we only consume one when
+        // the on-disk version is 3 or newer.
+        let dense_input_size = if version >= 3 {
+            read_u32(&mut cursor)? as usize
+        } else {
+            0
+        };
+
         let config = NnueConfig::new_owned(
             feature_size,
             accumulator_size,
             hidden_sizes_owned,
             activation,
-        );
+        )
+        .with_dense_input(dense_input_size);
 
         let mut weights = Self::zeros(config);
         Self::read_weights_from(data, &mut cursor, &mut weights)?;
@@ -368,6 +409,16 @@ impl NnueWeights {
         let obias = read_i16(cursor, 1)?;
         weights.output_bias = obias[0];
 
+        // Optional dense-input projection (v3+). Skipped when the
+        // network was saved without a dense branch (v2 files, or v3
+        // files where `dense_input_size == 0`).
+        let dense_input_size = config.dense_input_size;
+        if dense_input_size > 0 {
+            for i in 0..dense_input_size {
+                weights.dense_to_acc[i] = read_i16(cursor, acc)?;
+            }
+        }
+
         Ok(())
     }
 }
@@ -404,6 +455,40 @@ impl Accumulator {
         }
         for &feat in nstm_features {
             simd::vec_add_i16(&mut self.nstm, &weights.feature_weights[feat]);
+        }
+    }
+
+    /// Apply the dense-input projection to both perspectives. Each entry of
+    /// `dense_input` scales the corresponding `dense_to_acc` row and is
+    /// accumulated. Skipped (no-op) when the network has no dense branch
+    /// (`weights.dense_to_acc.is_empty()`). The dense vector is assumed to
+    /// be perspective-symmetric, so the same contribution is added to both
+    /// STM and NSTM accumulator halves; if the host engine wants different
+    /// dense inputs per perspective it can call this method with separate
+    /// values targeting each half via [`Accumulator::stm`] / `nstm` slices.
+    pub fn apply_dense_input(&mut self, weights: &NnueWeights, dense_input: &[f32]) {
+        if weights.dense_to_acc.is_empty() {
+            return;
+        }
+        debug_assert_eq!(
+            dense_input.len(),
+            weights.config.dense_input_size,
+            "dense_input length must match config.dense_input_size",
+        );
+        for (i, &x) in dense_input.iter().enumerate() {
+            if x == 0.0 {
+                continue;
+            }
+            let row = &weights.dense_to_acc[i];
+            // Scale-and-accumulate the row into both halves. The dense
+            // weights are stored as i16 and `x` is an f32 in the host's
+            // native scale; the cast here trades a tiny precision loss
+            // for SIMD-free portability.
+            for j in 0..self.stm.len() {
+                let contrib = (row[j] as f32 * x) as i16;
+                self.stm[j] = self.stm[j].saturating_add(contrib);
+                self.nstm[j] = self.nstm[j].saturating_add(contrib);
+            }
         }
     }
 
