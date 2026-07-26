@@ -12,6 +12,25 @@
 
 NORU is a **game-agnostic** NNUE library that provides both training and inference in a single, dependency-free Rust crate. Configure your network dimensions at runtime via `NnueConfig` — no recompilation needed.
 
+### Choosing an evaluator
+
+NORU and [CB2Vec](https://github.com/nicotina04/cb2vec) solve related but
+different representation problems. Neither is a drop-in speed upgrade for the
+other: the right choice starts with how the domain state is encoded.
+
+| Choose | When the state is naturally represented as |
+|---|---|
+| **NORU** | A sparse set of global features whose additions and removals update an NNUE accumulator before a dense MLP. |
+| **CB2Vec** | Repeated local categorical observations that should share embedding rows, pool into groups, and support exact token replacement and make/undo. |
+
+Both provide pure-Rust FP32 training and integer deployment. NORU is the
+better starting point for classic sparse-feature NNUE; CB2Vec is worth
+considering for fixed or bounded sites with categorical lanes and frequent
+small reversible changes. See CB2Vec's
+[selection guide](https://github.com/nicotina04/cb2vec#is-cb2vec-a-fit)
+and [benchmark notes](https://github.com/nicotina04/cb2vec/blob/main/BENCHMARKS.md)
+for the workload assumptions behind that distinction.
+
 ### Why this library?
 
 Most NNUE code in the wild lives inside a specific chess engine (Stockfish, Rapfi, …) and is hard-wired to that engine's feature layout in C++. Applying NNUE to a different game — Gomoku, Connect 4, a tactical hex-grid battler — traditionally means either forking one of those engines and rewriting its feature encoder, or re-implementing training from scratch in Python with PyTorch and then writing a separate C++ inference path for deployment.
@@ -145,7 +164,11 @@ NORU has been validated across three games of different branching factors and
 feature encodings, which is the primary evidence that the runtime-configurable
 design generalizes beyond chess:
 
-- **Gomoku (15×15 Five-in-a-Row).** `figrid-board` v0.4.x ships a pbrain/Piskvork-compatible Gomocup engine (`pbrain-figrid-noru`) built on NORU. Feature set: 4096 (PS + LP-Rich + Compound threats + Density). Configuration: accumulator 512 → hidden 64 → output. Gomocup 2026 submission target. Repo: <https://github.com/nicotina04/figrid-board>.
+- **Gomoku engine ([FIGRID](https://github.com/nicotina04/figrid-board)).**
+  NORU established the engine's sparse-feature NNUE lineage and still supplies
+  its learned ordering model. The later codebook leaf evaluator became a
+  separate CB2Vec consumer, making this a useful example of choosing different
+  representations for different evaluation roles in one search engine.
 - **Hex-grid tactical battler.** An auto-extraction RPG combat engine uses NORU for unit-placement evaluation. Feature set: 138 (position-independent, per-class + global). Configuration: accumulator 256 → hidden 64 → output. Demonstrates that non-board-game domains fit the same API.
 - **Connect 4.** A minimal second game used as an ablation target to confirm generality; reaches ~45% win rate against a depth-matched heuristic after a few hours of training.
 
